@@ -218,11 +218,14 @@ class WriteResult:
     stats: ExtractionStats
     classifier_failed: bool = False
     turns: Turns = field(default_factory=list)  # что увидела модель после сжатия диалога
+    classifier_sections: list[Section] = field(default_factory=list)  # что ответил LLM-классификатор
+    safety_net: list[Section] = field(default_factory=list)           # что добавил код
 
     def summary(self) -> dict[str, Any]:
         return {
             "dialog_id": self.dialog_id,
             "sections": [s.value for s in self.sections],
+            "safety_net": [s.value for s in self.safety_net],
             "changes": self.report.counts(),
             "rejected": len(self.report.rejected),
             "off_section": self.stats.off_section,
@@ -246,20 +249,41 @@ class WriteResult:
 
 
 class WritePath:
+    """write-path: классификатор разделов → страховка кодом → extractor по разделам → MemoryWriter."""
+
     def __init__(self, llm: LLM, writer: MemoryWriter,
-                 classifier: SectionClassifier | None = None, extractor: Extractor | None = None):
+                 classifier: SectionClassifier | None = None, extractor: Extractor | None = None,
+                 safety_net: bool = True):
         self.writer = writer
         self.classifier = classifier or SectionClassifier(llm)
         self.extractor = extractor or Extractor(llm)
+        self.use_safety_net = safety_net
+
+    def safety_net(self, turns: Turns, sections: list[Section]) -> list[Section]:
+        """Разделы, которые классификатор пропустил, а код видит по справочнику.
+
+        Название препарата из справочника — точный сигнал, поэтому раздел medications
+        добавляется детерминированно. Решать, факт это или вопрос («можно ли мне Нурофен?»),
+        по-прежнему будет extractor: страховка повышает полноту маршрутизации ценой лишнего вызова.
+        """
+        if Section.MEDICATIONS in sections:
+            return []
+        text = "\n".join(t["content"] for t in turns)
+        return [Section.MEDICATIONS] if self.writer.normalizer.drug_mentions(text) else []
 
     def process(self, user_id: str, turns: Turns, dialog_id: str | None = None) -> WriteResult:
         # Модель видит реплики покупателя и только вопросы ассистента, без его длинных советов
         turns = compact_dialog(turns)
         sections, ccall = self.classifier(turns)
+        classifier_sections = list(sections)
         classifier_failed = not ccall.ok
+        added: list[Section] = []
         if classifier_failed:
             # Классификатор не ответил: лучше лишние вызовы extractor-а, чем потерянная аллергия
             sections = list(Section)
+        elif self.use_safety_net:
+            added = self.safety_net(turns, sections)
+            sections = sections + added
         extraction, ecalls, stats = self.extractor(turns, sections) if sections else (
             {"facts": [], "section_statuses": []}, [], ExtractionStats())
         report = self.writer.write(user_id, extraction, dialog_id)
@@ -273,7 +297,7 @@ class WritePath:
                         {"task": c.task, "section": c.section, "raw": c.raw[:2000]}, [c.error or "ошибка"],
                     )
         return WriteResult(dialog_id, sections, extraction, report, [ccall, *ecalls], stats, classifier_failed,
-                           turns)
+                           turns, classifier_sections, added)
 
 
 # --------------------------------------------------------------------------- read-path

@@ -32,4 +32,4 @@ __all__ = [
     "classify_transition", "extract_json_object", "parse_extraction", "select_sections", "statuses_for",
 ]
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"

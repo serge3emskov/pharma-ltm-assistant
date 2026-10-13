@@ -107,6 +107,7 @@ class DialogResult:
             "note": self.note,
             "sections_gold": sorted(self.gold_sections),
             "sections_pred": sorted(self.pred_sections),
+            "safety_net": s["safety_net"],
             "missing": sorted(self.missing_facts | self.missing_states),
             "extra": sorted(self.extra_facts | self.extra_states),
             "data_errors": self.data_errors,
@@ -150,7 +151,7 @@ def run_write_dev(
                 data_errors.append(f"{section}/{key}.{fld}: ожидалось {value!r}, получено {got!r}")
         results.append(DialogResult(
             id=d["id"], note=d.get("note", ""),
-            gold_sections=set(d["gold_sections"]), pred_sections={s.value for s in write.sections},
+            gold_sections=set(d["gold_sections"]), pred_sections={s.value for s in write.classifier_sections},
             missing_facts=exp_facts - facts, extra_facts=facts - exp_facts,
             missing_states=exp_states - states, extra_states=states - exp_states,
             data_errors=data_errors, write=write,
@@ -186,6 +187,8 @@ def summarize_write(results: list[DialogResult], dialogs: list[dict]) -> dict[st
         "data_errors": sum(len(r.data_errors) for r in results),
         "rejected_events": sum(s["rejected"] for s in summaries),
         "off_section_dropped": sum(s["off_section"] for s in summaries),
+        "safety_net_added": sum(len(s["safety_net"]) for s in summaries),
+        "safety_net_recovered": sum(1 for r in results for x in r.write.safety_net if x.value in r.gold_sections),
         "llm_calls": sum(s["llm_calls"] for s in summaries),
         "retries": sum(s["retries"] for s in summaries),
         "failed_calls": sum(1 for r in results for c in r.write.calls if not c.ok),

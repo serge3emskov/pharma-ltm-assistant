@@ -1,0 +1,1207 @@
+{
+  "model": "Qwen/Qwen3-4B-Instruct-2507:4bit",
+  "backend": "qwen",
+  "run_tag": "run2",
+  "write_summary": {
+    "dialogs": 16,
+    "dialogs_fully_correct": 14,
+    "sections": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "facts": {
+      "precision": 0.929,
+      "recall": 0.929,
+      "f1": 0.929
+    },
+    "section_states": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "data_errors": 0,
+    "rejected_events": 1,
+    "off_section_dropped": 0,
+    "llm_calls": 41,
+    "retries": 0,
+    "failed_calls": 0,
+    "latency_s_total": 0.0
+  },
+  "write_rows": [
+    {
+      "id": "d01",
+      "ok": true,
+      "note": "лекарство + хроническое + «аллергий нет»",
+      "sections_gold": [
+        "allergies",
+        "chronic_conditions",
+        "medications"
+      ],
+      "sections_pred": [
+        "allergies",
+        "chronic_conditions",
+        "medications"
+      ],
+      "missing": [],
+      "extra": [],
+      "data_errors": [],
+      "rejected": 0,
+      "off_section": 0,
+      "retries": 0,
+      "latency_s": 0.0
+    },
+    {
+      "id": "d02",
+      "ok": true,
+      "note": "только вопрос — фактов нет",
+      "sections_gold": [],
+      "sections_pred": [],
+      "missing": [],
+      "extra": [],
+      "data_errors": [],
+      "rejected": 0,
+      "off_section": 0,
+      "retries": 0,
+      "latency_s": 0.0
+    },
+    {
+      "id": "d03",
+      "ok": true,
+      "note": "ответ «нет» на вопрос ассистента + симптом",
+      "sections_gold": [
+        "allergies",
+        "symptoms"
+      ],
+      "sections_pred": [
+        "allergies",
+        "symptoms"
+      ],
+      "missing": [],
+      "extra": [],
+      "data_errors": [],
+      "rejected": 0,
+      "off_section": 0,
+      "retries": 0,
+      "latency_s": 0.0
+    },
+    {
+      "id": "d04",
+      "ok": true,
+      "note": "покупка для ребёнка: возраст, вес, симптомы",
+      "sections_gold": [
+        "demographics",
+        "symptoms"
+      ],
+      "sections_pred": [
+        "demographics",
+        "symptoms"
+      ],
+      "missing": [],
+      "extra": [],
+      "data_errors": [],
+      "rejected": 0,
+      "off_section": 0,
+      "retries": 0,
+      "latency_s": 0.0
+    },
+    {
+      "id": "d05",
+      "ok": true,
+      "note": "аллергия с реакцией и непереносимость",
+      "sections_gold": [
+        "allergies"
+      ],
+      "sections_pred": [
+        "allergies"
+      ],
+      "missing": [],
+      "extra": [],
+      "data_errors": [],
+      "rejected": 0,
+      "off_section": 0,
+      "retries": 0,
+      "latency_s": 0.0
+    },
+    {
+      "id": "d06",
+      "ok": true,
+      "note": "отмена препарата и новый (есть предыстория)",
+      "sections_gold": [
+        "medications"
+      ],
+      "sections_pred": [
+        "medications"
+      ],
+      "missing": [],
+      "extra": [],
+      "data_errors": [],
+      "rejected": 0,
+      "off_section": 0,
+      "retries": 0,
+      "latency_s": 0.0
+    },
+    {
+      "id": "d07",
+      "ok": true,
+      "note": "«не беременна» + лактация + вождение",
+      "sections_gold": [
+        "lifestyle",
+        "special_states"
+      ],
+      "sections_pred": [
+        "lifestyle",
+        "special_states"
+      ],
+      "missing": [],
+      "extra": [],
+      "data_errors": [],
+      "rejected": 0,
+      "off_section": 0,
+      "retries": 0,
+      "latency_s": 0.0
+    },
+    {
+      "id": "d08",
+      "ok": true,
+      "note": "срок беременности + возраст",
+      "sections_gold": [
+        "demographics",
+        "special_states"
+      ],
+      "sections_pred": [
+        "demographics",
+        "special_states"
+      ],
+      "missing": [],
+      "extra": [],
+      "data_errors": [],
+      "rejected": 0,
+      "off_section": 0,
+      "retries": 0,
+      "latency_s": 0.0
+    },
+    {
+      "id": "d09",
+      "ok": true,
+      "note": "ремиссия + «не знаю» про аллергию",
+      "sections_gold": [
+        "allergies",
+        "chronic_conditions"
+      ],
+      "sections_pred": [
+        "allergies",
+        "chronic_conditions"
+      ],
+      "missing": [],
+      "extra": [],
+      "data_errors": [],
+      "rejected": 0,
+      "off_section": 0,
+      "retries": 0,
+      "latency_s": 0.0
+    },
+    {
+      "id": "d10",
+      "ok": false,
+      "note": "покупка для мамы: диагноз врача, назначенный и постоянный препарат",
+      "sections_gold": [
+        "medications",
+        "reported_diagnoses"
+      ],
+      "sections_pred": [
+        "medications",
+        "reported_diagnoses"
+      ],
+      "missing": [
+        [
+          "medications",
+          "мама",
+          "монурал",
+          "prescribed"
+        ]
+      ],
+      "extra": [
+        [
+          "medications",
+          "мама",
+          "монурал",
+          "active"
+        ]
+      ],
+      "data_errors": [],
+      "rejected": 1,
+      "off_section": 0,
+      "retries": 0,
+      "latency_s": 0.0
+    },
+    {
+      "id": "d11",
+      "ok": true,
+      "note": "подтверждённое отсутствие по двум разделам",
+      "sections_gold": [
+        "chronic_conditions",
+        "medications"
+      ],
+      "sections_pred": [
+        "chronic_conditions",
+        "medications"
+      ],
+      "missing": [],
+      "extra": [],
+      "data_errors": [],
+      "rejected": 0,
+      "off_section": 0,
+      "retries": 0,
+      "latency_s": 0.0
+    },
+    {
+      "id": "d12",
+      "ok": true,
+      "note": "отрицание ранее сохранённой аллергии",
+      "sections_gold": [
+        "allergies"
+      ],
+      "sections_pred": [
+        "allergies"
+      ],
+      "missing": [],
+      "extra": [],
+      "data_errors": [],
+      "rejected": 0,
+      "off_section": 0,
+      "retries": 0,
+      "latency_s": 0.0
+    },
+    {
+      "id": "d13",
+      "ok": false,
+      "note": "симптом прошёл + новый симптом",
+      "sections_gold": [
+        "symptoms"
+      ],
+      "sections_pred": [
+        "symptoms"
+      ],
+      "missing": [
+        [
+          "symptoms",
+          "self",
+          "кашель",
+          "resolved"
+        ]
+      ],
+      "extra": [
+        [
+          "symptoms",
+          "self",
+          "кашель",
+          "active"
+        ]
+      ],
+      "data_errors": [],
+      "rejected": 0,
+      "off_section": 0,
+      "retries": 0,
+      "latency_s": 0.0
+    },
+    {
+      "id": "d14",
+      "ok": true,
+      "note": "курение + препарат только в вопросе",
+      "sections_gold": [
+        "lifestyle"
+      ],
+      "sections_pred": [
+        "lifestyle"
+      ],
+      "missing": [],
+      "extra": [],
+      "data_errors": [],
+      "rejected": 0,
+      "off_section": 0,
+      "retries": 0,
+      "latency_s": 0.0
+    },
+    {
+      "id": "d15",
+      "ok": true,
+      "note": "изменение дозировки (есть предыстория)",
+      "sections_gold": [
+        "medications"
+      ],
+      "sections_pred": [
+        "medications"
+      ],
+      "missing": [],
+      "extra": [],
+      "data_errors": [],
+      "rejected": 0,
+      "off_section": 0,
+      "retries": 0,
+      "latency_s": 0.0
+    },
+    {
+      "id": "d16",
+      "ok": true,
+      "note": "возраст, пол, алкоголь",
+      "sections_gold": [
+        "demographics",
+        "lifestyle"
+      ],
+      "sections_pred": [
+        "demographics",
+        "lifestyle"
+      ],
+      "missing": [],
+      "extra": [],
+      "data_errors": [],
+      "rejected": 0,
+      "off_section": 0,
+      "retries": 0,
+      "latency_s": 0.0
+    }
+  ],
+  "write_failures": [
+    {
+      "dialog_id": "d10",
+      "sections": [
+        "reported_diagnoses",
+        "medications"
+      ],
+      "changes": {
+        "first_mention": 3,
+        "rejected": 1
+      },
+      "rejected": 1,
+      "off_section": 0,
+      "failed_sections": 0,
+      "repairs": 0,
+      "repaired": 0,
+      "classifier_failed": false,
+      "llm_calls": 3,
+      "retries": 0,
+      "latency_s": 0.0,
+      "turns": [
+        {
+          "role": "user",
+          "content": "Маме врач поставил цистит и назначил Монурал — вот пришла за ним. Она ещё постоянно пьёт Варфарин."
+        }
+      ],
+      "extraction": {
+        "facts": [
+          {
+            "section": "reported_diagnoses",
+            "subject": "мама",
+            "name": "цистит",
+            "polarity": "positive",
+            "status": "active",
+            "diagnosed_by": "врач",
+            "evidence": "Маме врач поставил цистит"
+          },
+          {
+            "section": "reported_diagnoses",
+            "subject": "мама",
+            "name": "Варфарин",
+            "polarity": "positive",
+            "status": "active",
+            "diagnosed_by": "сам",
+            "evidence": "она ещё постоянно пьёт Варфарин"
+          },
+          {
+            "section": "medications",
+            "subject": "мама",
+            "name": "Монурал",
+            "polarity": "positive",
+            "status": "active",
+            "evidence": "Маме врач поставил цистит и назначил Монурал — вот пришла за ним"
+          },
+          {
+            "section": "medications",
+            "subject": "мама",
+            "name": "Варфарин",
+            "polarity": "positive",
+            "status": "active",
+            "evidence": "Она ещё постоянно пьёт Варфарин"
+          }
+        ],
+        "section_statuses": []
+      },
+      "report": [
+        {
+          "change": "first_mention",
+          "section": "reported_diagnoses",
+          "subject": "мама",
+          "key": "цистит",
+          "before": null,
+          "after": {
+            "status": "active",
+            "data": {
+              "diagnosed_by": "врач"
+            }
+          }
+        },
+        {
+          "change": "first_mention",
+          "section": "medications",
+          "subject": "мама",
+          "key": "монурал",
+          "before": null,
+          "after": {
+            "status": "active",
+            "data": {}
+          }
+        },
+        {
+          "change": "first_mention",
+          "section": "medications",
+          "subject": "мама",
+          "key": "варфарин",
+          "before": null,
+          "after": {
+            "status": "active",
+            "data": {}
+          }
+        },
+        {
+          "change": "rejected",
+          "section": null,
+          "subject": null,
+          "key": null,
+          "before": {
+            "subject": "мама",
+            "name": "Варфарин",
+            "polarity": "positive",
+            "evidence": "она ещё постоянно пьёт Варфарин",
+            "section": "reported_diagnoses",
+            "status": "active",
+            "diagnosed_by": "сам"
+          },
+          "after": "«Варфарин» есть в справочнике препаратов (варфарин) — не относится к разделу reported_diagnoses"
+        }
+      ],
+      "calls": [
+        {
+          "task": "classify_sections",
+          "section": null,
+          "raw": "{\"sections\": [\"reported_diagnoses\", \"medications\"]}",
+          "ok": true,
+          "error": null,
+          "attempts": 1,
+          "latency_s": 5.5470000006607734e-05,
+          "parsed": [
+            "reported_diagnoses",
+            "medications"
+          ]
+        },
+        {
+          "task": "extract",
+          "section": "reported_diagnoses",
+          "raw": "{\"facts\": [{\"section\": \"reported_diagnoses\", \"subject\": \"мама\", \"name\": \"цистит\", \"polarity\": \"positive\", \"status\": \"active\", \"diagnosed_by\": \"врач\", \"evidence\": \"Маме врач поставил цистит\"}, {\"section\": \"reported_diagnoses\", \"subject\": \"мама\", \"name\": \"Варфарин\", \"polarity\": \"positive\", \"status\": \"active\", \"diagnosed_by\": \"сам\", \"evidence\": \"она ещё постоянно пьёт Варфарин\"}]}",
+          "ok": true,
+          "error": null,
+          "attempts": 1,
+          "latency_s": 4.61380000160716e-05,
+          "parsed": 2
+        },
+        {
+          "task": "extract",
+          "section": "medications",
+          "raw": "{\"facts\": [{\"section\": \"medications\", \"subject\": \"мама\", \"name\": \"Монурал\", \"polarity\": \"positive\", \"status\": \"active\", \"evidence\": \"Маме врач поставил цистит и назначил Монурал — вот пришла за ним\"}, {\"section\": \"medications\", \"subject\": \"мама\", \"name\": \"Варфарин\", \"polarity\": \"positive\", \"status\": \"active\", \"evidence\": \"Она ещё постоянно пьёт Варфарин\"}], \"section_statuses\": []}",
+          "ok": true,
+          "error": null,
+          "attempts": 1,
+          "latency_s": 7.081499995820195e-05,
+          "parsed": 2
+        }
+      ]
+    },
+    {
+      "dialog_id": "d13",
+      "sections": [
+        "symptoms"
+      ],
+      "changes": {
+        "first_mention": 1
+      },
+      "rejected": 0,
+      "off_section": 0,
+      "failed_sections": 0,
+      "repairs": 0,
+      "repaired": 0,
+      "classifier_failed": false,
+      "llm_calls": 2,
+      "retries": 0,
+      "latency_s": 0.0,
+      "turns": [
+        {
+          "role": "user",
+          "content": "Кашель уже прошёл, спасибо. А вот изжога мучает."
+        }
+      ],
+      "extraction": {
+        "facts": [
+          {
+            "section": "symptoms",
+            "subject": "self",
+            "name": "изжога",
+            "polarity": "positive",
+            "status": "active",
+            "evidence": "А вот изжога мучает"
+          }
+        ],
+        "section_statuses": []
+      },
+      "report": [
+        {
+          "change": "first_mention",
+          "section": "symptoms",
+          "subject": "self",
+          "key": "изжога",
+          "before": null,
+          "after": {
+            "status": "active",
+            "data": {}
+          }
+        }
+      ],
+      "calls": [
+        {
+          "task": "classify_sections",
+          "section": null,
+          "raw": "{\"sections\": [\"symptoms\"]}",
+          "ok": true,
+          "error": null,
+          "attempts": 1,
+          "latency_s": 5.3293999940251524e-05,
+          "parsed": [
+            "symptoms"
+          ]
+        },
+        {
+          "task": "extract",
+          "section": "symptoms",
+          "raw": "{\"facts\": [{\"section\": \"symptoms\", \"subject\": \"self\", \"name\": \"изжога\", \"polarity\": \"positive\", \"status\": \"active\", \"evidence\": \"А вот изжога мучает\"}]}",
+          "ok": true,
+          "error": null,
+          "attempts": 1,
+          "latency_s": 5.2946000096198986e-05,
+          "parsed": 1
+        }
+      ]
+    }
+  ],
+  "query_summary": {
+    "llm": {
+      "queries": 20,
+      "types_exact_match": 1.0,
+      "types": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "subject_accuracy": 1.0,
+      "fallbacks": 0
+    },
+    "rules": {
+      "queries": 20,
+      "types_exact_match": 0.85,
+      "types": {
+        "precision": 0.9,
+        "recall": 0.857,
+        "f1": 0.878
+      },
+      "subject_accuracy": 1.0,
+      "fallbacks": 0
+    }
+  },
+  "query_rows": [
+    {
+      "id": "q01",
+      "text": "Что выпить от головной боли?",
+      "types_ok": true,
+      "subject_ok": true,
+      "gold": [
+        "symptom_relief"
+      ],
+      "pred": [
+        "symptom_relief"
+      ],
+      "subject_gold": "self",
+      "subject_pred": "self",
+      "fallback": false,
+      "raw": "{\"query_types\": [\"symptom_relief\"], \"subject\": \"self\"}"
+    },
+    {
+      "id": "q02",
+      "text": "Можно ли Нурофен вместе с Конкором?",
+      "types_ok": true,
+      "subject_ok": true,
+      "gold": [
+        "drug_compatibility"
+      ],
+      "pred": [
+        "drug_compatibility"
+      ],
+      "subject_gold": "self",
+      "subject_pred": "self",
+      "fallback": false,
+      "raw": "{\"query_types\": [\"drug_compatibility\"], \"subject\": \"self\"}"
+    },
+    {
+      "id": "q03",
+      "text": "Сколько капель Називина можно ребёнку?",
+      "types_ok": true,
+      "subject_ok": true,
+      "gold": [
+        "dosing"
+      ],
+      "pred": [
+        "dosing"
+      ],
+      "subject_gold": "ребёнок",
+      "subject_pred": "ребёнок",
+      "fallback": false,
+      "raw": "{\"query_types\": [\"dosing\"], \"subject\": \"ребёнок\"}"
+    },
+    {
+      "id": "q04",
+      "text": "Есть аналог Нольпазы подешевле?",
+      "types_ok": true,
+      "subject_ok": true,
+      "gold": [
+        "analog"
+      ],
+      "pred": [
+        "analog"
+      ],
+      "subject_gold": "self",
+      "subject_pred": "self",
+      "fallback": false,
+      "raw": "{\"query_types\": [\"analog\"], \"subject\": \"self\"}"
+    },
+    {
+      "id": "q05",
+      "text": "Я кормлю грудью, можно ли мне Парацетамол?",
+      "types_ok": true,
+      "subject_ok": true,
+      "gold": [
+        "pregnancy_lactation"
+      ],
+      "pred": [
+        "pregnancy_lactation"
+      ],
+      "subject_gold": "self",
+      "subject_pred": "self",
+      "fallback": false,
+      "raw": "{\"query_types\": [\"pregnancy_lactation\"], \"subject\": \"self\"}"
+    },
+    {
+      "id": "q06",
+      "text": "Что я раньше пил от давления?",
+      "types_ok": true,
+      "subject_ok": true,
+      "gold": [
+        "therapy_history"
+      ],
+      "pred": [
+        "therapy_history"
+      ],
+      "subject_gold": "self",
+      "subject_pred": "self",
+      "fallback": false,
+      "raw": "{\"query_types\": [\"therapy_history\"], \"subject\": \"self\"}"
+    },
+    {
+      "id": "q07",
+      "text": "Что ты обо мне помнишь?",
+      "types_ok": true,
+      "subject_ok": true,
+      "gold": [
+        "profile_review"
+      ],
+      "pred": [
+        "profile_review"
+      ],
+      "subject_gold": "self",
+      "subject_pred": "self",
+      "fallback": false,
+      "raw": "{\"query_types\": [\"profile_review\"], \"subject\": \"self\"}"
+    },
+    {
+      "id": "q08",
+      "text": "До скольки вы работаете?",
+      "types_ok": true,
+      "subject_ok": true,
+      "gold": [
+        "general"
+      ],
+      "pred": [
+        "general"
+      ],
+      "subject_gold": "self",
+      "subject_pred": "self",
+      "fallback": false,
+      "raw": "{\"query_types\": [\"general\"], \"subject\": \"self\"}"
+    },
+    {
+      "id": "q09",
+      "text": "У дочки температура 38, что дать?",
+      "types_ok": true,
+      "subject_ok": true,
+      "gold": [
+        "symptom_relief"
+      ],
+      "pred": [
+        "symptom_relief"
+      ],
+      "subject_gold": "дочь",
+      "subject_pred": "дочь",
+      "fallback": false,
+      "raw": "{\"query_types\": [\"symptom_relief\"], \"subject\": \"дочь\"}"
+    },
+    {
+      "id": "q10",
+      "text": "Можно ли пить алкоголь с Амоксиклавом?",
+      "types_ok": true,
+      "subject_ok": true,
+      "gold": [
+        "drug_compatibility"
+      ],
+      "pred": [
+        "drug_compatibility"
+      ],
+      "subject_gold": "self",
+      "subject_pred": "self",
+      "fallback": false,
+      "raw": "{\"query_types\": [\"drug_compatibility\"], \"subject\": \"self\"}"
+    },
+    {
+      "id": "q11",
+      "text": "Как принимать Омез — до еды или после?",
+      "types_ok": true,
+      "subject_ok": true,
+      "gold": [
+        "dosing"
+      ],
+      "pred": [
+        "dosing"
+      ],
+      "subject_gold": "self",
+      "subject_pred": "self",
+      "fallback": false,
+      "raw": "{\"query_types\": [\"dosing\"], \"subject\": \"self\"}"
+    },
+    {
+      "id": "q12",
+      "text": "Чем заменить Супрастин, чтобы не клонило в сон?",
+      "types_ok": true,
+      "subject_ok": true,
+      "gold": [
+        "analog"
+      ],
+      "pred": [
+        "analog"
+      ],
+      "subject_gold": "self",
+      "subject_pred": "self",
+      "fallback": false,
+      "raw": "{\"query_types\": [\"analog\"], \"subject\": \"self\"}"
+    },
+    {
+      "id": "q13",
+      "text": "Маме можно Найз при её давлении?",
+      "types_ok": true,
+      "subject_ok": true,
+      "gold": [
+        "drug_compatibility"
+      ],
+      "pred": [
+        "drug_compatibility"
+      ],
+      "subject_gold": "мама",
+      "subject_pred": "мама",
+      "fallback": false,
+      "raw": "{\"query_types\": [\"drug_compatibility\"], \"subject\": \"мама\"}"
+    },
+    {
+      "id": "q14",
+      "text": "Беременным можно Но-шпу?",
+      "types_ok": true,
+      "subject_ok": true,
+      "gold": [
+        "pregnancy_lactation"
+      ],
+      "pred": [
+        "pregnancy_lactation"
+      ],
+      "subject_gold": "self",
+      "subject_pred": "self",
+      "fallback": false,
+      "raw": "{\"query_types\": [\"pregnancy_lactation\"], \"subject\": \"self\"}"
+    },
+    {
+      "id": "q15",
+      "text": "Посоветуйте что-нибудь от насморка и можно ли это при гипертонии?",
+      "types_ok": true,
+      "subject_ok": true,
+      "gold": [
+        "drug_compatibility",
+        "symptom_relief"
+      ],
+      "pred": [
+        "drug_compatibility",
+        "symptom_relief"
+      ],
+      "subject_gold": "self",
+      "subject_pred": "self",
+      "fallback": false,
+      "raw": "{\"query_types\": [\"symptom_relief\", \"drug_compatibility\"], \"subject\": \"self\"}"
+    },
+    {
+      "id": "q16",
+      "text": "Какие таблетки от аллергии мне подойдут?",
+      "types_ok": true,
+      "subject_ok": true,
+      "gold": [
+        "symptom_relief"
+      ],
+      "pred": [
+        "symptom_relief"
+      ],
+      "subject_gold": "self",
+      "subject_pred": "self",
+      "fallback": false,
+      "raw": "{\"query_types\": [\"symptom_relief\"], \"subject\": \"self\"}"
+    },
+    {
+      "id": "q17",
+      "text": "Сыну 10 лет, сколько Ибуклина ему давать?",
+      "types_ok": true,
+      "subject_ok": true,
+      "gold": [
+        "dosing"
+      ],
+      "pred": [
+        "dosing"
+      ],
+      "subject_gold": "сын",
+      "subject_pred": "сын",
+      "fallback": false,
+      "raw": "{\"query_types\": [\"dosing\"], \"subject\": \"сын\"}"
+    },
+    {
+      "id": "q18",
+      "text": "Что посоветуете от кашля ребёнку 3 лет?",
+      "types_ok": true,
+      "subject_ok": true,
+      "gold": [
+        "symptom_relief"
+      ],
+      "pred": [
+        "symptom_relief"
+      ],
+      "subject_gold": "ребёнок",
+      "subject_pred": "ребёнок",
+      "fallback": false,
+      "raw": "{\"query_types\": [\"symptom_relief\"], \"subject\": \"ребёнок\"}"
+    },
+    {
+      "id": "q19",
+      "text": "Сколько стоит доставка?",
+      "types_ok": true,
+      "subject_ok": true,
+      "gold": [
+        "general"
+      ],
+      "pred": [
+        "general"
+      ],
+      "subject_gold": "self",
+      "subject_pred": "self",
+      "fallback": false,
+      "raw": "{\"query_types\": [\"general\"], \"subject\": \"self\"}"
+    },
+    {
+      "id": "q20",
+      "text": "Мне нужно что-то от изжоги",
+      "types_ok": true,
+      "subject_ok": true,
+      "gold": [
+        "symptom_relief"
+      ],
+      "pred": [
+        "symptom_relief"
+      ],
+      "subject_gold": "self",
+      "subject_pred": "self",
+      "fallback": false,
+      "raw": "{\"query_types\": [\"symptom_relief\"], \"subject\": \"self\"}"
+    }
+  ],
+  "chat": [
+    {
+      "text": "Здравствуйте! Спасибо за информацию. Учитывая аллергию на пенициллин, избегайте препаратов с пенициллиновыми компонентами. Лозартан (Лозап) — безопасен при аллергии на пенициллин. Продолжайте принимать по назначению. Проверяйте артериальное давление регулярно. Если появятся симптомы, такие как головокружение или резкое изменение давления — обратитесь к врачу.",
+      "latency_s": 11.89,
+      "read": {
+        "query_types": [
+          "therapy_history"
+        ],
+        "subject": "self",
+        "fallback_used": false,
+        "sections": [
+          "medications",
+          "reported_diagnoses",
+          "chronic_conditions"
+        ],
+        "clarify": [],
+        "context": "### ПАМЯТЬ АССИСТЕНТА — со слов покупателя (документами не подтверждено)\nСубъект: сам покупатель\n\n### СПРАВОЧНИК — препараты, упомянутые в диалоге\n- «лозап» → лозартан; группа: БРА",
+        "call": {
+          "task": "classify_query",
+          "section": null,
+          "raw": "{\"query_types\": [\"therapy_history\"], \"subject\": \"self\"}",
+          "ok": true,
+          "error": null,
+          "attempts": 1,
+          "latency_s": 1.9837669270000333,
+          "parsed": {
+            "query_types": [
+              "therapy_history"
+            ],
+            "subject": "self"
+          }
+        }
+      }
+    },
+    {
+      "text": "При грудном вскармливании от насморка можно использовать безрецептурные средства, такие как солевые растворы (например, солёная вода) для промывания носа. Избегайте препаратов с симметричными или сильными противовоспалительными компонентами. Если насморк длится дольше 10 дней — обратитесь к врачу.",
+      "latency_s": 9.28,
+      "read": {
+        "query_types": [
+          "symptom_relief",
+          "pregnancy_lactation"
+        ],
+        "subject": "self",
+        "fallback_used": false,
+        "sections": [
+          "symptoms",
+          "reported_diagnoses",
+          "medications",
+          "allergies",
+          "chronic_conditions",
+          "special_states",
+          "demographics",
+          "lifestyle"
+        ],
+        "clarify": [
+          "- Аллергии и непереносимость: нет данных",
+          "- Лекарства: нет данных",
+          "- Хронические заболевания: нет данных",
+          "- Беременность и лактация: нет данных"
+        ],
+        "context": "### ПАМЯТЬ АССИСТЕНТА — со слов покупателя (документами не подтверждено)\nСубъект: сам покупатель\n\n### СПРАВОЧНИК — препараты, упомянутые в диалоге\n- «лозап» → лозартан; группа: БРА\n\n### НУЖНО УТОЧНИТЬ ПЕРЕД РЕКОМЕНДАЦИЕЙ (этого нет в памяти; если покупатель уже сказал об этом в текущем диалоге — не переспрашивай)\n- Аллергии и непереносимость: нет данных\n- Лекарства: нет данных\n- Хронические заболевания: нет данных\n- Беременность и лактация: нет данных",
+        "call": {
+          "task": "classify_query",
+          "section": null,
+          "raw": "{\"query_types\": [\"symptom_relief\", \"pregnancy_lactation\"], \"subject\": \"self\"}",
+          "ok": true,
+          "error": null,
+          "attempts": 1,
+          "latency_s": 2.70790175500008,
+          "parsed": {
+            "query_types": [
+              "symptom_relief",
+              "pregnancy_lactation"
+            ],
+            "subject": "self"
+          }
+        }
+      }
+    },
+    {
+      "text": "Добрый день. Учитывая вашу гипертонию и лактацию, рекомендую сначала уточнить, есть ли у вас другие симптомы (например, тошнота, рвота, головокружение).  \nПри головной боли без других признаков можно использовать безрецептурные средства, например, парацетамол (действующее вещество: парацетамол), но только в дозе до 1000 мг за 24 часа.  \nНе используйте препараты с нитроглицерином или другие средства, если у вас гипертония.  \nЧитайте инструкцию и не превышайте дозировку.  \nЕсли боль сохраняется более 3 дней или появляются симптомы — обратитесь к врачу.",
+      "latency_s": 19.32,
+      "read": {
+        "query_types": [
+          "symptom_relief"
+        ],
+        "subject": "self",
+        "fallback_used": false,
+        "sections": [
+          "symptoms",
+          "reported_diagnoses",
+          "medications",
+          "allergies",
+          "chronic_conditions",
+          "special_states",
+          "demographics",
+          "lifestyle"
+        ],
+        "clarify": [
+          "- Лекарства: нет данных"
+        ],
+        "context": "### ПАМЯТЬ АССИСТЕНТА — со слов покупателя (документами не подтверждено)\nСубъект: сам покупатель\n\n#### Аллергии и непереносимость\n- пенициллины [актуально] — реакция: крапивница; тип: аллергия — со слов: «пенициллин» — подтверждено 2026-10-01\n\n#### Хронические заболевания\n- артериальная гипертензия [актуально] — со слов: «гипертония» — подтверждено 2026-10-01\n\n#### Беременность и лактация\n- лактация [актуально] — подтверждено 2026-10-01\n\n### НУЖНО УТОЧНИТЬ ПЕРЕД РЕКОМЕНДАЦИЕЙ (этого нет в памяти; если покупатель уже сказал об этом в текущем диалоге — не переспрашивай)\n- Лекарства: нет данных",
+        "call": {
+          "task": "classify_query",
+          "section": null,
+          "raw": "{\"query_types\": [\"symptom_relief\"], \"subject\": \"self\"}",
+          "ok": true,
+          "error": null,
+          "attempts": 1,
+          "latency_s": 2.0629418539999733,
+          "parsed": {
+            "query_types": [
+              "symptom_relief"
+            ],
+            "subject": "self"
+          }
+        }
+      }
+    }
+  ],
+  "chat_write": [
+    {
+      "dialog_id": "session-1",
+      "sections": [
+        "chronic_conditions",
+        "allergies",
+        "special_states"
+      ],
+      "changes": {
+        "first_mention": 3
+      },
+      "rejected": 0,
+      "off_section": 0,
+      "failed_sections": 0,
+      "repairs": 0,
+      "repaired": 0,
+      "classifier_failed": false,
+      "llm_calls": 4,
+      "retries": 0,
+      "latency_s": 23.06,
+      "turns": [
+        {
+          "role": "user",
+          "content": "Здравствуйте! У меня гипертония, пью Лозап 50 по утрам. На пенициллин аллергия — была крапивница."
+        },
+        {
+          "role": "user",
+          "content": "И ещё: я кормлю грудью. Что можно от насморка?"
+        }
+      ],
+      "extraction": {
+        "facts": [
+          {
+            "section": "chronic_conditions",
+            "subject": "self",
+            "name": "гипертония",
+            "polarity": "positive",
+            "status": "active",
+            "evidence": "У меня гипертония, пью Лозап 50 по утрам"
+          },
+          {
+            "section": "allergies",
+            "subject": "self",
+            "name": "пенициллин",
+            "polarity": "positive",
+            "reaction_type": "allergy",
+            "reaction": "крапивница",
+            "evidence": "На пенициллин аллергия — была крапивница"
+          },
+          {
+            "section": "special_states",
+            "subject": "self",
+            "name": "лактация",
+            "polarity": "positive",
+            "evidence": "я кормлю грудью"
+          }
+        ],
+        "section_statuses": []
+      },
+      "report": [
+        {
+          "change": "first_mention",
+          "section": "chronic_conditions",
+          "subject": "self",
+          "key": "артериальная гипертензия",
+          "before": null,
+          "after": {
+            "status": "active",
+            "data": {}
+          }
+        },
+        {
+          "change": "first_mention",
+          "section": "allergies",
+          "subject": "self",
+          "key": "пенициллины",
+          "before": null,
+          "after": {
+            "status": "active",
+            "data": {
+              "reaction_type": "allergy",
+              "reaction": "крапивница"
+            }
+          }
+        },
+        {
+          "change": "first_mention",
+          "section": "special_states",
+          "subject": "self",
+          "key": "лактация",
+          "before": null,
+          "after": {
+            "status": "active",
+            "data": {}
+          }
+        }
+      ],
+      "calls": [
+        {
+          "task": "classify_sections",
+          "section": null,
+          "raw": "{\"sections\": [\"chronic_conditions\", \"allergies\", \"special_states\"]}",
+          "ok": true,
+          "error": null,
+          "attempts": 1,
+          "latency_s": 2.0478553149999925,
+          "parsed": [
+            "chronic_conditions",
+            "allergies",
+            "special_states"
+          ]
+        },
+        {
+          "task": "extract",
+          "section": "chronic_conditions",
+          "raw": "{\"facts\": [{\"section\": \"chronic_conditions\", \"subject\": \"self\", \"name\": \"гипертония\", \"polarity\": \"positive\", \"status\": \"active\", \"evidence\": \"У меня гипертония, пью Лозап 50 по утрам\"}], \"section_statuses\": []}",
+          "ok": true,
+          "error": null,
+          "attempts": 1,
+          "latency_s": 7.016319300999953,
+          "parsed": 1
+        },
+        {
+          "task": "extract",
+          "section": "allergies",
+          "raw": "{\"facts\": [{\"section\": \"allergies\", \"subject\": \"self\", \"name\": \"пенициллин\", \"polarity\": \"positive\", \"reaction_type\": \"allergy\", \"reaction\": \"крапивница\", \"evidence\": \"На пенициллин аллергия — была крапивница\"}], \"section_statuses\": []}",
+          "ok": true,
+          "error": null,
+          "attempts": 1,
+          "latency_s": 8.705434016000027,
+          "parsed": 1
+        },
+        {
+          "task": "extract",
+          "section": "special_states",
+          "raw": "{\"facts\": [{\"section\": \"special_states\", \"subject\": \"self\", \"name\": \"лактация\", \"polarity\": \"positive\", \"evidence\": \"я кормлю грудью\"}], \"section_statuses\": []}",
+          "ok": true,
+          "error": null,
+          "attempts": 1,
+          "latency_s": 5.290885559999992,
+          "parsed": 1
+        }
+      ]
+    }
+  ]
+}

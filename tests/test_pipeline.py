@@ -303,3 +303,56 @@ def test_answer_context_has_reference_for_mentioned_drugs():
     session.say("Спасибо.")
     system = [c for c in llm.calls if c["meta"]["task"] == "answer"][-1]["messages"][0]["content"]
     assert "СПРАВОЧНИК" in system and "лозартан" in system and "БРА" in system  # из истории, не из последней реплики
+
+
+# ---------------------------------------------------------------- страховка классификатора разделов
+
+LIVE_TURNS = [{"role": "user", "content": "У меня гипертония, пью Лозап 50 по утрам. На пенициллин аллергия."}]
+
+
+def _router(sections):
+    def respond(m, meta):
+        if meta["task"] == "classify_sections":
+            return j({"sections": sections})
+        if meta["section"] == "medications":
+            return j({"facts": [{"section": "medications", "name": "Лозап 50", "status": "active",
+                                 "evidence": "пью Лозап 50 по утрам"}]})
+        return j({"facts": [], "section_statuses": []})
+    return respond
+
+
+def test_safety_net_recovers_missed_medications():
+    store = MemoryStore()
+    llm = ScriptedLLM(_router(["chronic_conditions", "allergies"]))  # как в живом прогоне 2
+    res = WritePath(llm, MemoryWriter(store)).process("u", LIVE_TURNS, "d1")
+    assert res.classifier_sections == [Section.CHRONIC_CONDITIONS, Section.ALLERGIES]
+    assert res.safety_net == [Section.MEDICATIONS] and res.summary()["safety_net"] == ["medications"]
+    assert [f.key for f in store.list_facts("u")] == ["лозартан"]
+
+
+def test_safety_net_silent_when_classifier_has_medications():
+    res = WritePath(ScriptedLLM(_router(["medications"])), MemoryWriter(MemoryStore())).process("u", LIVE_TURNS)
+    assert res.safety_net == [] and res.sections == [Section.MEDICATIONS]
+
+
+def test_safety_net_silent_without_known_drug():
+    turns = [{"role": "user", "content": "Пью витамин Д и рыбий жир."}]
+    res = WritePath(ScriptedLLM(_router(["lifestyle"])), MemoryWriter(MemoryStore())).process("u", turns)
+    assert res.safety_net == []
+
+
+def test_safety_net_can_be_disabled():
+    wp = WritePath(ScriptedLLM(_router(["allergies"])), MemoryWriter(MemoryStore()), safety_net=False)
+    assert wp.process("u", LIVE_TURNS).safety_net == []
+
+
+def test_safety_net_not_used_when_classifier_failed():
+    llm = ScriptedLLM(lambda m, meta: "сбой" if meta["task"] == "classify_sections" else j({"facts": []}))
+    res = WritePath(llm, MemoryWriter(MemoryStore())).process("u", LIVE_TURNS)
+    assert res.classifier_failed and res.safety_net == [] and len(res.sections) == len(Section)
+
+
+def test_answer_prompt_forbids_doses():
+    from pharmaltm.prompts import answer_messages
+    system = answer_messages("ctx", [], "Сколько пить парацетамола?")[0]["content"]
+    assert "Не называй дозы" in system

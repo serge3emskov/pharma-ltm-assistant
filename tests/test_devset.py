@@ -35,6 +35,12 @@ def test_gold_backend_reproduces_query_labels():
     assert summary["types_exact_match"] == 1.0 and summary["subject_accuracy"] == 1.0
 
 
+def test_safety_net_fires_only_where_drug_is_mentioned_outside_gold_sections():
+    results = run_write_dev(GoldLLM(DIALOGS, QUERIES), DIALOGS)
+    fired = {r.id for r in results if r.write.safety_net}
+    assert fired == {"d02", "d14"}  # препарат только в вопросе — extractor должен вернуть пусто
+
+
 def test_rules_baseline_is_measurable():
     summary = summarize_queries(run_query_dev(None, QUERIES))
     assert 0.5 < summary["types_exact_match"] < 1.0  # dev-набор не решается одними правилами
