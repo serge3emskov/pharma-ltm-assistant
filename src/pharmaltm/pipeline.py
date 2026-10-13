@@ -33,6 +33,7 @@ from .prompts import (
 )
 from .query_rules import classify_query_rules
 from .retrieval import ContextBuilder, ContextBundle, PurchaseRecord
+from .safety import PostCheck, SafetyChecker
 from .schemas import QueryClassification, QueryType, parse_extraction
 from .sections import Section
 from .store import MemoryStore
@@ -366,6 +367,7 @@ class ReadResult:
             "sections": [s.value for s in self.bundle.sections],
             "clarify": [c.render() for c in self.bundle.clarify],
             "context": self.bundle.render(),
+            "safety": self.bundle.safety.as_dict() if self.bundle.safety else None,
             "call": self.call.as_dict() if self.call else None,
         }
 
@@ -388,16 +390,23 @@ class ReadPath:
 
 @dataclass
 class AssistantReply:
-    text: str
+    text: str                       # что увидит покупатель (с предупреждениями, дописанными кодом)
     read: ReadResult
     latency_s: float
+    raw_text: str = ""              # ответ модели до проверки
+    safety: PostCheck | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return {"text": self.text, "latency_s": round(self.latency_s, 2), "read": self.read.as_dict()}
+        return {"text": self.text, "raw_text": self.raw_text, "latency_s": round(self.latency_s, 2),
+                "safety": self.safety.as_dict() if self.safety else None, "read": self.read.as_dict()}
 
 
 class PharmacyAssistant:
-    """Собирает всё вместе. Память — одна на ассистента, пользователи разделены user_id."""
+    """Собирает всё вместе. Память — одна на ассистента, пользователи разделены user_id.
+
+    safety=True (по умолчанию) — проверка по справочнику до и после ответа модели;
+    False — поведение этапов 2–3; можно передать свой SafetyChecker (например, со справочником ГРЛС).
+    """
 
     def __init__(
         self,
@@ -407,12 +416,15 @@ class PharmacyAssistant:
         clock: Callable[[], datetime] | None = None,
         use_llm_query_classifier: bool = True,
         answer_max_new_tokens: int = 512,
+        safety: SafetyChecker | bool = True,
     ):
         self.llm = llm
         self.store = store or MemoryStore()
         self.normalizer = normalizer or Normalizer()
+        self.safety: SafetyChecker | None = (SafetyChecker(self.normalizer.catalog) if safety is True
+                                             else safety or None)
         self.writer = MemoryWriter(self.store, self.normalizer, clock)
-        self.builder = ContextBuilder(self.store, self.normalizer, self.writer.clock)
+        self.builder = ContextBuilder(self.store, self.normalizer, self.writer.clock, safety=self.safety)
         self.write_path = WritePath(llm, self.writer)
         self.read_path = ReadPath(self.builder, QueryClassifier(llm if use_llm_query_classifier else None))
         self.answer_max_new_tokens = answer_max_new_tokens
@@ -422,9 +434,12 @@ class PharmacyAssistant:
         history = history or []
         read = self.read_path(user_id, message, history, purchases)
         t0 = time.perf_counter()
-        text = self.llm.chat(answer_messages(read.bundle.render(), history, message),
-                             max_new_tokens=self.answer_max_new_tokens, meta={"task": "answer"})
-        return AssistantReply(text.strip(), read, time.perf_counter() - t0)
+        raw = self.llm.chat(answer_messages(read.bundle.render(), history, message),
+                            max_new_tokens=self.answer_max_new_tokens, meta={"task": "answer"}).strip()
+        post = None
+        if self.safety is not None and read.bundle.safety is not None:
+            post = self.safety.post_check(raw, read.bundle.safety.profile, read.bundle.safety.question_drugs)
+        return AssistantReply(post.text if post else raw, read, time.perf_counter() - t0, raw, post)
 
     def session(self, user_id: str, dialog_id: str | None = None,
                 purchases: Iterable[PurchaseRecord] | None = None) -> "ChatSession":

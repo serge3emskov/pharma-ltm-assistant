@@ -73,6 +73,7 @@ class LexEntry:
     aliases: tuple[str, ...] = ()
     components: tuple[str, ...] = ()
     classes: tuple[str, ...] = ()
+    atc: tuple[str, ...] = ()  # коды АТХ (для препаратов)
 
 
 Method = Literal["exact", "prefix", "fuzzy", "unmatched"]
@@ -89,6 +90,7 @@ class NormResult:
     classes: tuple[str, ...] = ()
     dosage: str | None = None
     candidates: tuple[str, ...] = field(default_factory=tuple)
+    atc: tuple[str, ...] = ()
 
     @property
     def matched(self) -> bool:
@@ -111,7 +113,13 @@ class Lexicon:
         fuzzy_cutoff: float = 85.0,
         min_fuzzy_len: int = 5,
         ambiguity_margin: float = 3.0,
+        mention_keys: Iterable[str] | None = None,
     ):
+        """mention_keys — ключи, которые ищутся в свободном тексте (find_mentions).
+
+        По умолчанию — все. Большому справочнику (ГРЛС) передаётся отфильтрованный набор:
+        среди торговых наименований есть обычные слова, и в речи они не означают препарат.
+        """
         self.fuzzy_cutoff = fuzzy_cutoff
         self.min_fuzzy_len = min_fuzzy_len
         self.ambiguity_margin = ambiguity_margin
@@ -122,6 +130,7 @@ class Lexicon:
                 if key and key not in self._index:  # первая запись в списке имеет приоритет
                     self._index[key] = entry
         self._keys = list(self._index)
+        self._mention_keys = None if mention_keys is None else frozenset(mention_keys) & self._index.keys()
 
     def __len__(self) -> int:
         return len(self._index)
@@ -130,7 +139,7 @@ class Lexicon:
         components = entry.components or (entry.canonical,)
         return NormResult(
             raw=raw, cleaned=cleaned, normalized=entry.canonical, method=method, score=score,
-            components=components, classes=entry.classes, dosage=parse_dosage(raw),
+            components=components, classes=entry.classes, dosage=parse_dosage(raw), atc=entry.atc,
         )
 
     def _fuzzy(self, query: str) -> tuple[LexEntry | None, float, tuple[str, ...]]:
@@ -198,7 +207,8 @@ class Lexicon:
                 variants = [last, *stems, *(st + "а" for st in stems), *(st + "я" for st in stems)]
                 for v in variants:
                     gram = " ".join(chunk[:-1] + [v])
-                    if v and len(gram) >= min_len and gram in self._index:
+                    if v and len(gram) >= min_len and gram in self._index and (
+                            self._mention_keys is None or gram in self._mention_keys):
                         hit, step = gram, n
                         break
                 if hit:

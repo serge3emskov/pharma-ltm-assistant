@@ -218,8 +218,11 @@ class ProbeRun:
     check_llm: dict
     check_gold: dict
     answer_prompt: list | None = None
-    answer: str | None = None
+    answer: str | None = None            # что увидит покупатель (после проверки по справочнику, если она есть)
     answer_results: list[dict] = field(default_factory=list)
+    answer_raw: str | None = None        # ответ модели до проверки
+    answer_results_raw: list[dict] = field(default_factory=list)
+    post_check: Any = None               # PostCheck
 
 
 @dataclass
@@ -338,7 +341,12 @@ def run_golden(
     answer_max_new_tokens: int = 512,
     batch_size: int = 8,
     log: Callable[[str], None] | None = None,
+    safety: Any = None,
 ) -> EvalRun:
+    """safety — SafetyChecker: проверка по справочнику в контексте ответа и после ответа (этап 4).
+
+    Без неё промпты ответов байт в байт совпадают с этапом 3, и ответы берутся из кэша.
+    """
     normalizer = normalizer or Normalizer()
     t0 = time.perf_counter()
     scenario_runs: list[ScenarioRun] = []
@@ -348,7 +356,7 @@ def run_golden(
         clock = lambda: clock_now[0]  # noqa: E731
         store = MemoryStore()
         writer = MemoryWriter(store, normalizer, clock)
-        builder = ContextBuilder(store, normalizer, clock)
+        builder = ContextBuilder(store, normalizer, clock, safety=safety)
         write_path = WritePath(llm, writer)
         run = ScenarioRun(sc)
         for i, step in enumerate(sc["steps"]):
@@ -391,8 +399,13 @@ def run_golden(
         answers = chat_many(llm, [p.answer_prompt for p in pending], max_new_tokens=answer_max_new_tokens,
                             json_mode=False, metas=[{"task": "answer"}] * len(pending), batch_size=batch_size)
         for p, a in zip(pending, answers):
-            p.answer = a.strip()
+            p.answer_raw = p.answer = a.strip()
+            if safety is not None and p.bundle_llm.safety is not None:
+                p.post_check = safety.post_check(p.answer_raw, p.bundle_llm.safety.profile,
+                                                 p.bundle_llm.safety.question_drugs)
+                p.answer = p.post_check.text
             p.answer_results = check_answer(p.answer, p.gold["answer_checks"])
+            p.answer_results_raw = check_answer(p.answer_raw, p.gold["answer_checks"])
     t_answers = time.perf_counter() - t1
 
     t2 = time.perf_counter()
@@ -668,6 +681,8 @@ def summarize(run: EvalRun) -> dict[str, Any]:
     # ---- 5. E2E-ответы
     answered = [p for p in probes if p.answer is not None]
     results = [c for p in answered for c in p.answer_results]
+    results_raw = [c for p in answered for c in p.answer_results_raw]
+    post = [p.post_check for p in answered if p.post_check is not None]
 
     # ---- ошибки по этапам
     errors = [e for r in run.scenarios for e in attribute_errors(r)]
@@ -715,6 +730,12 @@ def summarize(run: EvalRun) -> dict[str, Any]:
             "checks": len(results),
             "passed": sum(c["passed"] for c in results),
             "rate": round(sum(c["passed"] for c in results) / len(results), 3) if results else None,
+            "passed_raw": sum(c["passed"] for c in results_raw),
+            "safety_checked": len(post),
+            "answers_with_appended_warnings": sum(1 for x in post if x.appended),
+            "appended_warnings": sum(len(x.appended) for x in post),
+            "covered_warnings": sum(len(x.covered) + len(x.declined) for x in post),
+            "answers_with_doses": sum(1 for x in post if x.doses),
         },
         "queries": {"llm": summarize_queries(run.queries_llm), "rules": summarize_queries(run.queries_rules)},
         "errors_by_stage": dict(Counter(e["error"] for e in errors).most_common()),
@@ -795,6 +816,10 @@ def to_report(run: EvalRun, golden: GoldenSet | None = None) -> dict[str, Any]:
                 "fallback": p.fallback, "check_llm": p.check_llm, "check_gold": p.check_gold,
                 "context_llm": p.bundle_llm.render() if not p.check_llm["ok"] or p.answer else None,
                 "answer": p.answer, "answer_checks": p.answer_results,
+                "answer_raw": p.answer_raw if p.answer_raw != p.answer else None,
+                "answer_checks_raw": p.answer_results_raw if p.answer_raw != p.answer else None,
+                "safety": p.bundle_llm.safety.as_dict() if p.bundle_llm.safety else None,
+                "post_check": p.post_check.as_dict() if p.post_check else None,
             })
     return {
         "model": run.model,
@@ -828,6 +853,12 @@ COMPARE_ROWS: list[tuple[str, Callable[[dict], Any]]] = [
      lambda s: f"{s['retrieval']['llm']['probes_ok']}/{s['retrieval']['llm']['probes']}"),
     ("Ответы: эвристики пройдены",
      lambda s: (f"{s['e2e_answers']['passed']}/{s['e2e_answers']['checks']}" if s["e2e_answers"]["checks"] else "—")),
+    ("  до проверки по справочнику",
+     lambda s: (f"{s['e2e_answers']['passed_raw']}/{s['e2e_answers']['checks']}"
+                if s["e2e_answers"].get("safety_checked") else "—")),
+    ("  ответов с дописанным предупреждением",
+     lambda s: (f"{s['e2e_answers']['answers_with_appended_warnings']}/{s['e2e_answers']['safety_checked']}"
+                if s["e2e_answers"].get("safety_checked") else "—")),
     ("Классификатор запроса: точное совпадение", lambda s: s["queries"]["llm"]["types_exact_match"]),
     ("  правила (baseline)", lambda s: s["queries"]["rules"]["types_exact_match"]),
     ("Вызовов LLM на сессию", lambda s: s["performance"]["calls_per_session"]),

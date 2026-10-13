@@ -13,6 +13,7 @@ from typing import Callable, Iterable, Literal
 from .lexicon import NormResult
 from .normalize import Normalizer
 from .reference_data import CHILD_SUBJECTS, MALE_SUBJECTS
+from .safety import SafetyChecker, SafetyReport
 from .schemas import QueryType
 from .sections import ATTRIBUTE_LABELS, DATA_LABELS, DATA_VALUE_LABELS, POLICIES, FactKind, Section, StaleAction, status_label
 from .store import Fact, MemoryStore, SectionState
@@ -44,6 +45,12 @@ CLARIFY_SECTIONS: dict[QueryType, tuple[Section, ...]] = {
 REQUIRED_ATTRIBUTES: dict[QueryType, tuple[str, ...]] = {
     QueryType.DOSING: ("age",),
 }
+
+# Запросы, после которых ассистент может предложить препарат: для них в контекст идут ограничения по профилю
+RECOMMENDING_QUERIES: frozenset[QueryType] = frozenset({
+    QueryType.SYMPTOM_RELIEF, QueryType.DRUG_COMPATIBILITY, QueryType.DOSING, QueryType.ANALOG,
+    QueryType.PREGNANCY_LACTATION,
+})
 
 # Запросы, для которых нужны и неактуальные записи
 HISTORY_SECTIONS: dict[QueryType, tuple[Section, ...]] = {
@@ -133,6 +140,7 @@ class ContextBundle:
     purchases: list[tuple[PurchaseRecord, str]] = field(default_factory=list)
     reference: list[NormResult] = field(default_factory=list)
     now: datetime | None = None
+    safety: SafetyReport | None = None  # проверка по справочнику, если подключена
 
     # ---------------------------------------------------------------- для тестов и оценки
     def keys(self, section: Section | None = None) -> set[str]:
@@ -147,6 +155,7 @@ class ContextBundle:
         if not self.sections:
             lines = ["### ПАМЯТЬ: для этого запроса персональный контекст не нужен"]
             lines += self._render_reference()
+            lines += self.safety.render() if self.safety else []
             return "\n".join(lines)
         subj = "сам покупатель" if self.subject == "self" else self.subject
         lines = [
@@ -163,6 +172,7 @@ class ContextBundle:
                 lines.append(f"- {rec.date}: «{rec.name_raw}» × {rec.quantity} → {normalized}")
             lines.append("Если покупки расходятся со словами покупателя, не выбирай одну версию сам — уточни.")
         lines += self._render_reference()
+        lines += self.safety.render() if self.safety else []
         if self.clarify:
             lines += ["", "### НУЖНО УТОЧНИТЬ ПЕРЕД РЕКОМЕНДАЦИЕЙ (этого нет в памяти; "
                           "если покупатель уже сказал об этом в текущем диалоге — не переспрашивай)"]
@@ -232,10 +242,12 @@ class ContextBuilder:
         store: MemoryStore,
         normalizer: Normalizer | None = None,
         clock: Callable[[], datetime] | None = None,
+        safety: SafetyChecker | None = None,
     ):
         self.store = store
         self.normalizer = normalizer or Normalizer()
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.safety = safety
 
     def is_stale(self, fact: Fact, now: datetime) -> bool:
         ttl = POLICIES[fact.section].ttl_for(fact.key)
@@ -290,6 +302,12 @@ class ContextBuilder:
                 bundle.purchases.append((rec, label))
         if reference_text:
             bundle.reference = self.normalizer.drug_mentions(reference_text)
+        if self.safety is not None:
+            # Профиль для проверки берётся из всей памяти субъекта, а не только из разделов этого запроса:
+            # беременность важна и для вопроса «чем заменить Нурофен»
+            profile = self.safety.profile(self.store, user_id, subject, now)
+            bundle.safety = self.safety.report(profile, reference_text,
+                                               with_restrictions=bool(RECOMMENDING_QUERIES & set(qts)))
         return bundle
 
     @staticmethod

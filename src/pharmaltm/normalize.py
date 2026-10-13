@@ -9,11 +9,14 @@ from __future__ import annotations
 import re
 
 from . import reference_data as ref
+from .catalog import DrugCatalog
 from .lexicon import Lexicon, NormResult, clean_name, fold, parse_dosage
 from .sections import Section
 
 
 class Normalizer:
+    """Справочники всех разделов. Препараты — из DrugCatalog (стартовый набор или + ГРЛС)."""
+
     def __init__(
         self,
         drugs: Lexicon | None = None,
@@ -22,10 +25,16 @@ class Normalizer:
         symptoms: Lexicon | None = None,
         diagnoses: Lexicon | None = None,
         subjects: dict[str, tuple[str, ...]] | None = None,
+        catalog: DrugCatalog | None = None,
     ):
-        self.drugs = drugs or Lexicon(ref.DRUGS)
+        self.catalog = catalog or DrugCatalog()
+        self.drugs = drugs or self.catalog.lexicon()
         # Аллергены ищем раньше препаратов: «на пенициллин» — это класс
-        self.allergens = allergens or Lexicon([*ref.ALLERGENS, *ref.DRUGS])
+        self.allergens = allergens or Lexicon(
+            [*ref.ALLERGENS, *self.catalog.entries()],
+            mention_keys={clean_name(a) for e in ref.ALLERGENS for a in (e.canonical, *e.aliases)}
+            | self.catalog.mention_keys(self.catalog.non_drug_words()),
+        )
         self.conditions = conditions or Lexicon(ref.CONDITIONS)
         self.symptoms = symptoms or Lexicon(ref.SYMPTOMS)
         self.diagnoses = diagnoses or Lexicon(ref.DIAGNOSES)
@@ -49,6 +58,10 @@ class Normalizer:
             key = fold(name)
             return NormResult(raw=name, cleaned=key, normalized=name, method="exact", dosage=parse_dosage(name))
         return lexicon.lookup(name)
+
+    @classmethod
+    def from_catalog(cls, catalog: DrugCatalog) -> "Normalizer":
+        return cls(catalog=catalog)
 
     def drug_mentions(self, text: str) -> list[NormResult]:
         """Препараты из справочника, упомянутые в тексте: для блока СПРАВОЧНИК в контексте ответа."""
