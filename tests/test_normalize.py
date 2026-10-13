@@ -75,3 +75,16 @@ def test_other_sections(normalizer, section, raw, expected):
 ])
 def test_subjects(normalizer, raw, expected):
     assert normalizer.subject(raw) == expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Можно ли Нурофен вместе с Конкором?", ["ибупрофен", "бисопролол"]),
+    ("Беременным можно Но-шпу?", ["дротаверин"]),
+    ("Дайте Смекту и Нольпазу", ["диосмектит", "пантопразол"]),
+    ("Пью Конкор Кор, Омеза больше нет", ["бисопролол", "омепразол"]),
+    ("Сыну сколько Ибуклина?", ["ибупрофен + парацетамол"]),
+    ("Был в миг у врача, пил мед с лимоном", []),       # короткие слова и не-препараты не ловим
+    ("Что-то от головы, нурафен не помогает", []),     # опечатки здесь не ищем — только точные совпадения
+])
+def test_drug_mentions(normalizer, text, expected):
+    assert [m.normalized for m in normalizer.drug_mentions(text)] == expected

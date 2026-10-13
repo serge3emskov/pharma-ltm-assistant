@@ -8,6 +8,7 @@ Few-shot примеры хранятся как Python-структуры и с�
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from .llm import Messages
@@ -19,6 +20,29 @@ ROLE_LABELS = {"user": "Покупатель", "assistant": "Ассистент"
 
 def format_dialog(turns: list[dict[str, str]]) -> str:
     return "\n".join(f"{ROLE_LABELS.get(t['role'], t['role'])}: {t['content'].strip()}" for t in turns)
+
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+|\n+")
+_BULLET = re.compile(r"^[\s\-—–*•·#>\d.)]+")
+
+
+def compact_dialog(turns: list[dict[str, str]], max_questions: int = 2, max_chars: int = 300) -> list[dict[str, str]]:
+    """Диалог для write-path: реплики покупателя целиком, от ассистента — только его последние вопросы.
+
+    Длинные советы ассистента не несут сведений о покупателе, зато в них есть названия препаратов
+    и дозировки, которые extractor может ошибочно приписать покупателю. Вопросы нужны как контекст:
+    «нет» в ответ на «есть ли аллергия?».
+    """
+    out: list[dict[str, str]] = []
+    for t in turns:
+        if t["role"] != "assistant":
+            out.append({"role": t["role"], "content": t["content"]})
+            continue
+        sentences = [_BULLET.sub("", x).replace("**", "").strip() for x in _SENTENCE_SPLIT.split(t["content"])]
+        questions = [x for x in sentences if x.endswith("?")]
+        if questions:
+            out.append({"role": "assistant", "content": " ".join(questions[-max_questions:])[:max_chars]})
+    return out
 
 
 def _j(obj: Any) -> str:
@@ -95,13 +119,18 @@ EXTRACTOR_SYSTEM = """Ты — модуль извлечения фактов и
 - Вопрос покупателя («можно ли мне X?») — не факт.
 - subject — для кого сведения: "self", если о себе; иначе как назвал покупатель: "дочь", "сын", "мама", "ребёнок".
 - evidence — дословная цитата из реплики покупателя, на которой основан факт.
+- Каждый факт — отдельный элемент списка. Извлеки все факты раздела, а не только первый.
+- Если покупатель исправляет сказанное раньше («ошиблась», «на самом деле нет»), это тоже факт; name — то, о чём речь, даже если оно названо местоимением.
 - Поля, о которых покупатель не сказал, не включай. Других полей не добавляй.
 
 Правила раздела:
 {rules}
 
-Ответ — только JSON без пояснений: {{"facts": [...], "section_statuses": [...]}}
-Если сведений нет: {{"facts": [], "section_statuses": []}}"""
+Ответ — только JSON без пояснений: {output_format}
+Если сведений нет: {empty}"""
+
+_FORMAT_WITH_STATUSES = ('{"facts": [...], "section_statuses": [...]}', '{"facts": [], "section_statuses": []}')
+_FORMAT_FACTS_ONLY = ('{"facts": [...]}', '{"facts": []}')
 
 _NAME_RULE = ("- name — в начальной форме, но именно то, что назвал покупатель: торговое название не заменяй "
               "на действующее вещество, опечатки не исправляй.")
@@ -112,8 +141,10 @@ SECTION_RULES: dict[Section, str] = {
     Section.MEDICATIONS: "\n".join([
         "- Поля: section, subject, name, polarity, status, dosage, frequency, indication, evidence.",
         _NAME_RULE,
-        "- status: \"active\" — принимает сейчас; \"prescribed\" — назначили, приём ещё не начат; "
-        "\"paused\" — перерыв; \"stopped\" — бросил, перестал, отменили.",
+        "- status: \"active\" — принимает сейчас; \"prescribed\" — назначили или выписали, но приём ещё "
+        "не начат (в том числе «пришла купить»); \"paused\" — перерыв; \"stopped\" — бросил, перестал, отменили.",
+        "- «Перевели (заменили) с X на Y», «вместо X теперь Y» → два факта: X со status \"stopped\", "
+        "Y со status \"active\".",
         "- polarity \"negative\" — «X не принимаю», «X не пью».",
         "- dosage — дозировка, если названа отдельно от названия; frequency — как принимает; "
         "indication — от чего, если сказано.",
@@ -127,7 +158,7 @@ SECTION_RULES: dict[Section, str] = {
         "- reaction — как проявляется, если сказано.",
         "- «На X аллергии нет» → факт с polarity \"negative\".",
         "- «Аллергий нет» без уточнений → section_statuses: \"confirmed_absent\"; "
-        "«не знаю, есть ли аллергия» → \"dont_know\".",
+        "«не знаю, есть ли аллергия», «не проверял» → \"dont_know\".",
     ]),
     Section.CHRONIC_CONDITIONS: "\n".join([
         "- Поля: section, subject, name, polarity, status, evidence.",
@@ -135,6 +166,8 @@ SECTION_RULES: dict[Section, str] = {
         "- status: \"active\" или \"remission\" (ремиссия).",
         _POLARITY_RULE,
         "- «Хронических болезней нет» → section_statuses: \"confirmed_absent\"; «не знаю» → \"dont_know\".",
+        "- section_statuses — только о хронических болезнях в целом. «Не знаю» про аллергию или лекарства "
+        "сюда не относится.",
     ]),
     Section.SPECIAL_STATES: "\n".join([
         "- Поля: section, subject, name, polarity, pregnancy_week, evidence.",
@@ -158,10 +191,11 @@ SECTION_RULES: dict[Section, str] = {
         "- status: \"active\" — беспокоит сейчас; \"resolved\" — прошло.",
         "- severity: \"лёгкая\", \"умеренная\" или \"сильная\" — только если покупатель так оценил.",
         "- duration — сколько длится, если сказано. «Кашля нет» → polarity \"negative\".",
+        "- Препараты и болезни сюда не относятся — только жалобы.",
     ]),
     Section.REPORTED_DIAGNOSES: "\n".join([
         "- Поля: section, subject, name, polarity, status, diagnosed_by, evidence.",
-        "- name — диагноз как назвал покупатель. Хронические болезни сюда не относятся.",
+        "- name — диагноз как назвал покупатель. Хронические болезни, препараты и симптомы сюда не относятся.",
         "- status: \"active\" или \"resolved\" (вылечили, прошло).",
         "- diagnosed_by: \"врач\" — если диагноз поставил врач; \"сам\" — если покупатель так считает сам.",
     ]),
@@ -191,11 +225,25 @@ EXTRACTOR_EXAMPLES: dict[Section, list[tuple[list[dict[str, str]], dict]]] = {
             ], "section_statuses": []},
         ),
         (
+            [{"role": "user", "content": "Врач заменил Омез на Нольпазу."}],
+            {"facts": [
+                _fact("medications", subject="self", name="Омез", polarity="positive", status="stopped",
+                      evidence="Врач заменил Омез на Нольпазу"),
+                _fact("medications", subject="self", name="Нольпаза", polarity="positive", status="active",
+                      evidence="Врач заменил Омез на Нольпазу"),
+            ], "section_statuses": []},
+        ),
+        (
             [{"role": "user", "content": "Аспирин я не принимаю. Можно ли мне Терафлю?"}],
             {"facts": [
                 _fact("medications", subject="self", name="Аспирин", polarity="negative",
                       evidence="Аспирин я не принимаю"),
             ], "section_statuses": []},
+        ),
+        (
+            [{"role": "user", "content": "Я сейчас ничего не пью из таблеток."}],
+            {"facts": [], "section_statuses": [
+                _st("medications", "confirmed_absent", "Я сейчас ничего не пью из таблеток")]},
         ),
     ],
     Section.ALLERGIES: [
@@ -218,10 +266,24 @@ EXTRACTOR_EXAMPLES: dict[Section, list[tuple[list[dict[str, str]], dict]]] = {
             ],
             {"facts": [], "section_statuses": [_st("allergies", "confirmed_absent", "Нет, никакой.", "дочь")]},
         ),
+        (
+            [{"role": "user", "content": "Про ибупрофен — это была не аллергия, просто живот болел. "
+                                         "Аллергии на него нет."}],
+            {"facts": [
+                _fact("allergies", subject="self", name="ибупрофен", polarity="negative",
+                      evidence="Аллергии на него нет"),
+            ], "section_statuses": []},
+        ),
+        (
+            [{"role": "user", "content": "Не уверен, есть ли у меня аллергия на антибиотики, никогда не проверял."}],
+            {"facts": [], "section_statuses": [
+                _st("allergies", "dont_know", "Не уверен, есть ли у меня аллергия на антибиотики")]},
+        ),
     ],
     Section.CHRONIC_CONDITIONS: [
         (
-            [{"role": "user", "content": "У меня диабет 2 типа. Язва была, но сейчас ремиссия."}],
+            [{"role": "user", "content": "У меня диабет 2 типа. Язва была, но сейчас ремиссия. "
+                                         "Аллергии вроде нет."}],
             {"facts": [
                 _fact("chronic_conditions", subject="self", name="диабет 2 типа", polarity="positive",
                       status="active", evidence="У меня диабет 2 типа"),
@@ -260,7 +322,7 @@ EXTRACTOR_EXAMPLES: dict[Section, list[tuple[list[dict[str, str]], dict]]] = {
                 _fact("demographics", subject="дочь", attribute="age", value=6, evidence="Дочке 6 лет"),
                 _fact("demographics", subject="дочь", attribute="weight_kg", value=20, evidence="весит 20 кг"),
                 _fact("demographics", subject="self", attribute="age", value=34, evidence="Мне самой 34"),
-            ], "section_statuses": []},
+            ]},
         ),
     ],
     Section.LIFESTYLE: [
@@ -272,33 +334,40 @@ EXTRACTOR_EXAMPLES: dict[Section, list[tuple[list[dict[str, str]], dict]]] = {
                 _fact("lifestyle", subject="self", attribute="driving", value="да", details="каждый день",
                       evidence="за рулём каждый день"),
                 _fact("lifestyle", subject="self", attribute="alcohol", value="нет", evidence="Алкоголь не пью"),
-            ], "section_statuses": []},
+            ]},
         ),
     ],
     Section.SYMPTOMS: [
         (
-            [{"role": "user", "content": "Третий день температура 38 и сильно болит горло. Кашля нет, "
-                                         "насморк уже прошёл."}],
+            [{"role": "user", "content": "Третий день температура 38 и сильно болит горло. Кашля нет."}],
             {"facts": [
                 _fact("symptoms", subject="self", name="температура", polarity="positive", status="active",
                       duration="третий день", evidence="Третий день температура 38"),
                 _fact("symptoms", subject="self", name="болит горло", polarity="positive", status="active",
                       severity="сильная", evidence="сильно болит горло"),
                 _fact("symptoms", subject="self", name="кашель", polarity="negative", evidence="Кашля нет"),
-                _fact("symptoms", subject="self", name="насморк", polarity="positive", status="resolved",
-                      evidence="насморк уже прошёл"),
-            ], "section_statuses": []},
+            ]},
+        ),
+        (
+            [{"role": "user", "content": "Насморк у сына уже прошёл, а живот ещё болит. Пьёт Смекту."}],
+            {"facts": [
+                _fact("symptoms", subject="сын", name="насморк", polarity="positive", status="resolved",
+                      evidence="Насморк у сына уже прошёл"),
+                _fact("symptoms", subject="сын", name="болит живот", polarity="positive", status="active",
+                      evidence="а живот ещё болит"),
+            ]},
         ),
     ],
     Section.REPORTED_DIAGNOSES: [
         (
-            [{"role": "user", "content": "Врач сказал, что у сына отит. А у меня, думаю, просто простуда."}],
+            [{"role": "user", "content": "Врач сказал, что у сына отит, назначил Отипакс. "
+                                         "А у меня, думаю, просто простуда."}],
             {"facts": [
                 _fact("reported_diagnoses", subject="сын", name="отит", polarity="positive", status="active",
                       diagnosed_by="врач", evidence="Врач сказал, что у сына отит"),
                 _fact("reported_diagnoses", subject="self", name="простуда", polarity="positive", status="active",
                       diagnosed_by="сам", evidence="у меня, думаю, просто простуда"),
-            ], "section_statuses": []},
+            ]},
         ),
     ],
 }
@@ -306,7 +375,10 @@ EXTRACTOR_EXAMPLES: dict[Section, list[tuple[list[dict[str, str]], dict]]] = {
 
 def extractor_messages(section: Section, turns: list[dict[str, str]]) -> Messages:
     policy = POLICIES[section]
-    system = EXTRACTOR_SYSTEM.format(title=policy.title, section=section.value, rules=SECTION_RULES[section])
+    # Разделам без «нет ≠ нет данных» section_statuses не нужны — меньше полей, меньше путаницы у 4B
+    fmt, empty = _FORMAT_WITH_STATUSES if policy.absence_aware else _FORMAT_FACTS_ONLY
+    system = EXTRACTOR_SYSTEM.format(title=policy.title, section=section.value, rules=SECTION_RULES[section],
+                                     output_format=fmt, empty=empty)
     examples = [(f"Диалог:\n{format_dialog(t)}", out) for t, out in EXTRACTOR_EXAMPLES[section]]
     return _fewshot(system, examples, f"Диалог:\n{format_dialog(turns)}")
 
@@ -318,10 +390,12 @@ QUERY_DESCRIPTIONS: dict[QueryType, str] = {
     QueryType.DRUG_COMPATIBILITY: "можно ли совмещать препараты между собой, с алкоголем или с заболеванием",
     QueryType.DOSING: "как принимать, сколько, как часто, дозировка для ребёнка",
     QueryType.ANALOG: "замена, аналог, подешевле, без побочного эффекта",
-    QueryType.PREGNANCY_LACTATION: "можно ли при беременности или кормлении грудью",
+    QueryType.PREGNANCY_LACTATION: "можно ли при беременности или кормлении грудью — только если беременность "
+                                   "или кормление прямо упомянуты в сообщении",
     QueryType.THERAPY_HISTORY: "что покупатель принимал раньше",
     QueryType.PROFILE_REVIEW: "что ассистент о нём помнит",
-    QueryType.GENERAL: "не связано со здоровьем покупателя: часы работы, наличие, цены, доставка",
+    QueryType.GENERAL: "не связано со здоровьем покупателя (часы работы, наличие, цены, доставка), а также "
+                       "сообщение без вопроса, где покупатель только рассказывает о себе",
 }
 
 QUERY_SYSTEM = """Ты — классификатор сообщений покупателя в аптечном чате. Определи тип последнего сообщения покупателя и о ком оно.
@@ -338,6 +412,8 @@ QUERY_EXAMPLES: list[tuple[str, dict]] = [
      {"query_types": ["symptom_relief", "drug_compatibility"], "subject": "self"}),
     ("Сыну 10 лет, сколько Нурофена ему давать?", {"query_types": ["dosing"], "subject": "сын"}),
     ("Есть ли в наличии Смекта?", {"query_types": ["general"], "subject": "self"}),
+    ("Папе можно Ибупрофен при его гастрите?", {"query_types": ["drug_compatibility"], "subject": "папа"}),
+    ("Здравствуйте! У меня астма, пользуюсь ингалятором.", {"query_types": ["general"], "subject": "self"}),
 ]
 
 
@@ -353,14 +429,17 @@ def query_classifier_messages(message: str, history: list[dict[str, str]] | None
 
 # =========================================================================== 4. ответ ассистента
 
-ANSWER_SYSTEM = """Ты — консультант аптеки в онлайн-чате. Отвечай по-русски, кратко и по делу.
+ANSWER_SYSTEM = """Ты — консультант аптеки в онлайн-чате. Отвечай по-русски, коротко: не больше 6 предложений, без заголовков и эмодзи.
 
 Правила:
 - Ты не врач и не ставишь диагнозы. Предлагай только безрецептурные средства и напоминай читать инструкцию.
+- Что за препарат (действующее вещество, группа), бери только из блока СПРАВОЧНИК. Если препарата там нет, не утверждай, что это за препарат.
+- Не меняй и не оспаривай назначения и дозировки врача.
 - Учитывай блок ПАМЯТЬ: аллергии, принимаемые препараты, хронические заболевания, беременность и кормление, возраст.
-- Если есть блок «НУЖНО УТОЧНИТЬ», сначала задай эти вопросы и не давай рекомендацию вслепую.
+- Если есть блок «НУЖНО УТОЧНИТЬ», сначала задай эти вопросы — кроме тех, на которые покупатель уже ответил в этом диалоге.
+- Если покупатель только рассказал о себе и ничего не спросил, коротко поблагодари и спроси, чем помочь.
 - Если сведения из памяти и из документированного источника расходятся, скажи об этом и уточни.
-- Не придумывай сведения о покупателе, которых нет в памяти и в его сообщениях.
+- Не придумывай сведения о покупателе.
 - При тревожных признаках (высокая температура дольше 3 дней, боль в груди, затруднённое дыхание, кровь, сильная боль, состояние ребёнка ухудшается) советуй обратиться к врачу или вызвать скорую.
 
 {context}"""

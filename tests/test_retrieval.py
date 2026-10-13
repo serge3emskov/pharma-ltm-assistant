@@ -144,3 +144,24 @@ def test_purchase_history_is_a_separate_labelled_block(writer, builder):
 def test_purchases_skipped_when_medications_not_needed(builder):
     b = builder.build("u-test", [Q.GENERAL], purchases=[PurchaseRecord("2026-08-20", "Омез")])
     assert b.purchases == []
+
+
+# ---------------------------------------------------------------- справочник в контексте
+
+
+def test_reference_block_for_mentioned_drugs(builder):
+    b = builder.build("u-test", [Q.DRUG_COMPATIBILITY], reference_text="Можно ли ТераФлю с Конкором?")
+    text = b.render()
+    assert "### СПРАВОЧНИК" in text
+    assert "«терафлю» → комбинированный препарат: парацетамол, фенилэфрин, фенирамин" in text
+    assert "«конкором» → бисопролол; группа: бета-адреноблокаторы" in text
+
+
+def test_reference_block_even_without_personal_context(builder):
+    text = builder.build("u-test", [Q.GENERAL], reference_text="Есть Смекта?").render()
+    assert "не нужен" in text and "диосмектит" in text
+
+
+def test_clarify_header_tells_not_to_reask(builder):
+    text = builder.build("u-test", [Q.SYMPTOM_RELIEF]).render()
+    assert "не переспрашивай" in text

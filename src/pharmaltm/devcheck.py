@@ -19,7 +19,7 @@ from .llm import Messages
 from .memory import MemoryWriter
 from .normalize import Normalizer
 from .pipeline import QueryClassifier, WritePath, WriteResult
-from .prompts import format_dialog
+from .prompts import compact_dialog, format_dialog
 from .query_rules import classify_query_rules
 from .store import MemoryStore
 
@@ -50,7 +50,8 @@ class GoldLLM:
 
     def __init__(self, dialogs: list[dict], queries: list[dict],
                  answer_text: str = "[эталонный бэкенд: здесь будет ответ модели]"):
-        self.dialogs = {format_dialog(d["turns"]): d for d in dialogs}
+        # write-path показывает модели сжатый диалог — по нему и ищем эталон
+        self.dialogs = {format_dialog(compact_dialog(d["turns"])): d for d in dialogs}
         self.queries = {q["text"]: q for q in queries}
         self.answer_text = answer_text
 

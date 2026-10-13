@@ -64,3 +64,26 @@ def test_dialog_formatting():
 def test_query_prompt_includes_recent_history():
     msgs = query_classifier_messages("А ребёнку можно?", history=TURNS)
     assert "Предыдущие реплики" in msgs[-1]["content"] and "Пью Энап" in msgs[-1]["content"]
+
+
+@pytest.mark.parametrize("section", list(Section))
+def test_section_statuses_only_for_absence_aware_sections(section):
+    from pharmaltm import POLICIES
+    system = extractor_messages(section, TURNS)[0]["content"]
+    assert ("section_statuses" in system) == POLICIES[section].absence_aware
+
+
+def test_compact_dialog_keeps_user_turns_and_assistant_questions():
+    from pharmaltm.prompts import compact_dialog
+    turns = [
+        {"role": "user", "content": "Пью Энап."},
+        {"role": "assistant", "content": "**Важно:** Энап — 5 мг.\n— Есть ли аллергия?\n— Сколько вам лет?\n— Курите?"},
+        {"role": "assistant", "content": "Рекомендую солевой раствор."},
+        {"role": "user", "content": "Нет."},
+    ]
+    out = compact_dialog(turns)
+    assert out == [
+        {"role": "user", "content": "Пью Энап."},
+        {"role": "assistant", "content": "Сколько вам лет? Курите?"},
+        {"role": "user", "content": "Нет."},
+    ]

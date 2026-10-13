@@ -154,3 +154,40 @@ class Lexicon:
 
         return NormResult(raw=raw, cleaned=cleaned, normalized=cleaned, method="unmatched", score=0.0,
                           dosage=parse_dosage(raw), candidates=candidates)
+
+    # Окончания, которые отбрасываем при поиске упоминаний: «Конкором» → «конкор», «Лозапа» → «лозап»
+    _ENDINGS = ("ами", "ями", "ом", "ем", "ой", "ей", "ов", "ам", "ах", "а", "у", "е", "ы", "и", "ю")
+
+    def find_mentions(self, text: str, min_len: int = 4) -> list[NormResult]:
+        """Упоминания записей справочника в свободном тексте (только точные совпадения и падежные окончания).
+
+        Нечёткий поиск здесь не используется: в обычной речи слишком много похожих слов.
+        Записи короче min_len пропускаются («миг» — это ещё и обычное слово).
+        """
+        words = _NON_WORD.sub(" ", fold(text).replace("-", " ")).split()
+        found: dict[str, NormResult] = {}
+        i = 0
+        while i < len(words):
+            hit, step = None, 1
+            for n in (3, 2, 1):
+                chunk = words[i:i + n]
+                if len(chunk) < n:
+                    continue
+                last = chunk[-1]
+                stems = [last[: -len(e)] for e in self._ENDINGS if last.endswith(e)]
+                # «Но-шпу» → «но шпа»: женский род в косвенном падеже
+                variants = [last, *stems, *(st + "а" for st in stems), *(st + "я" for st in stems)]
+                for v in variants:
+                    gram = " ".join(chunk[:-1] + [v])
+                    if v and len(gram) >= min_len and gram in self._index:
+                        hit, step = gram, n
+                        break
+                if hit:
+                    break
+            if hit is not None:
+                entry = self._index[hit]
+                if entry.canonical not in found:
+                    raw = " ".join(words[i:i + step])
+                    found[entry.canonical] = self._result(raw, hit, entry, "exact", 100.0)
+            i += step
+        return list(found.values())

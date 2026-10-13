@@ -161,3 +161,24 @@ def test_events_carry_payload_and_dialog(writer, store):
     write(writer, ev("medications", "Энап", evidence="пью Энап"), dialog="dialog-42")
     events = store.events(USER, "dialog-42")
     assert len(events) == 1 and events[0].payload["evidence"] == "пью Энап"
+
+
+# ---------------------------------------------------------------- проверка по справочнику
+
+
+def test_drug_in_diagnoses_is_rejected_by_reference(writer, store):
+    r = write(writer, ev("reported_diagnoses", "Варфарин", subject="мама"), ev("reported_diagnoses", "цистит"))
+    assert [f.key for f in store.list_facts(USER)] == ["цистит"]
+    assert "справочнике препаратов" in r.rejected[0].errors[0]
+    assert store.rejections(USER)[0].kind == "fact"
+
+
+@pytest.mark.parametrize("section,name", [
+    ("chronic_conditions", "давление"),      # есть в справочнике заболеваний
+    ("allergies", "аспирин"),                # аллергия на препарат — нормально
+    ("reported_diagnoses", "монурал-синдром"),  # нет ни в одном справочнике — решает не код
+    ("symptoms", "кашель"),
+])
+def test_reference_check_keeps_legitimate_names(writer, store, section, name):
+    r = write(writer, ev(section, name))
+    assert not r.rejected and len(store.list_facts(USER)) == 1

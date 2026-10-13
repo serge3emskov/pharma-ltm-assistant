@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable, Literal
 
+from .lexicon import NormResult
 from .normalize import Normalizer
 from .reference_data import CHILD_SUBJECTS, MALE_SUBJECTS
 from .schemas import QueryType
@@ -130,6 +131,7 @@ class ContextBundle:
     section_states: dict[Section, SectionState] = field(default_factory=dict)
     clarify: list[ClarifyItem] = field(default_factory=list)
     purchases: list[tuple[PurchaseRecord, str]] = field(default_factory=list)
+    reference: list[NormResult] = field(default_factory=list)
     now: datetime | None = None
 
     # ---------------------------------------------------------------- для тестов и оценки
@@ -143,7 +145,9 @@ class ContextBundle:
     # ---------------------------------------------------------------- рендер для основной модели
     def render(self) -> str:
         if not self.sections:
-            return "### ПАМЯТЬ: для этого запроса персональный контекст не нужен"
+            lines = ["### ПАМЯТЬ: для этого запроса персональный контекст не нужен"]
+            lines += self._render_reference()
+            return "\n".join(lines)
         subj = "сам покупатель" if self.subject == "self" else self.subject
         lines = [
             "### ПАМЯТЬ АССИСТЕНТА — со слов покупателя (документами не подтверждено)",
@@ -158,9 +162,26 @@ class ContextBundle:
             for rec, normalized in self.purchases:
                 lines.append(f"- {rec.date}: «{rec.name_raw}» × {rec.quantity} → {normalized}")
             lines.append("Если покупки расходятся со словами покупателя, не выбирай одну версию сам — уточни.")
+        lines += self._render_reference()
         if self.clarify:
-            lines += ["", "### НУЖНО УТОЧНИТЬ ПЕРЕД РЕКОМЕНДАЦИЕЙ"] + [c.render() for c in self.clarify]
+            lines += ["", "### НУЖНО УТОЧНИТЬ ПЕРЕД РЕКОМЕНДАЦИЕЙ (этого нет в памяти; "
+                          "если покупатель уже сказал об этом в текущем диалоге — не переспрашивай)"]
+            lines += [c.render() for c in self.clarify]
         return "\n".join(lines)
+
+    def _render_reference(self) -> list[str]:
+        if not self.reference:
+            return []
+        lines = ["", "### СПРАВОЧНИК — препараты, упомянутые в диалоге"]
+        for m in self.reference:
+            if len(m.components) > 1:
+                parts = [f"- «{m.raw}» → комбинированный препарат: " + ", ".join(m.components)]
+            else:
+                parts = [f"- «{m.raw}» → {m.normalized}"]
+            if m.classes:
+                parts.append("группа: " + ", ".join(m.classes))
+            lines.append("; ".join(parts))
+        return lines
 
     def _render_section(self, section: Section) -> list[str]:
         policy = POLICIES[section]
@@ -225,7 +246,9 @@ class ContextBuilder:
         query_types: Iterable[QueryType],
         subject: str = "self",
         purchases: Iterable[PurchaseRecord] | None = None,
+        reference_text: str | None = None,
     ) -> ContextBundle:
+        """reference_text — реплики покупателя: упомянутые в них препараты попадают в блок СПРАВОЧНИК."""
         qts = list(dict.fromkeys(query_types)) or [QueryType.GENERAL]
         subject = self.normalizer.subject(subject)
         now = self.clock()
@@ -264,6 +287,8 @@ class ContextBuilder:
                 nr = self.normalizer.entity(S.MEDICATIONS, rec.name_raw)
                 label = nr.normalized if nr.matched else f"{nr.normalized} (не найдено в справочнике)"
                 bundle.purchases.append((rec, label))
+        if reference_text:
+            bundle.reference = self.normalizer.drug_mentions(reference_text)
         return bundle
 
     @staticmethod

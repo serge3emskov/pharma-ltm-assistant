@@ -48,6 +48,10 @@ class Normalizer:
             return NormResult(raw=name, cleaned=key, normalized=name, method="exact", dosage=parse_dosage(name))
         return lexicon.lookup(name)
 
+    def drug_mentions(self, text: str) -> list[NormResult]:
+        """Препараты из справочника, упомянутые в тексте: для блока СПРАВОЧНИК в контексте ответа."""
+        return self.drugs.find_mentions(text)
+
     def subject(self, raw: str | None) -> str:
         if not raw:
             return "self"

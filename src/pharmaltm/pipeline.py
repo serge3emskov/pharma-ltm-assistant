@@ -11,6 +11,7 @@ read-path:   сообщение → классификатор запроса (f
 """
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -23,13 +24,14 @@ from .memory import MemoryWriter, WriteReport
 from .normalize import Normalizer
 from .prompts import (
     answer_messages,
+    compact_dialog,
     extractor_messages,
     query_classifier_messages,
     section_classifier_messages,
 )
 from .query_rules import classify_query_rules
 from .retrieval import ContextBuilder, ContextBundle, PurchaseRecord
-from .schemas import QueryClassification, QueryType
+from .schemas import QueryClassification, QueryType, parse_extraction
 from .sections import Section
 from .store import MemoryStore
 
@@ -122,42 +124,87 @@ class SectionClassifier:
 class ExtractionStats:
     off_section: int = 0      # факты чужого раздела, отброшенные кодом
     failed_sections: int = 0  # разделы, по которым не удалось получить JSON
+    repairs: int = 0          # повторы из-за невалидных событий
+    repaired: int = 0         # повторы, после которых событий прошло больше
+
+
+VALIDATION_REPAIR_PROMPT = """Часть элементов не прошла проверку:
+{errors}
+Исправь эти элементы по правилам раздела или удали их, если это не сведения раздела. Верни весь JSON заново, без пояснений."""
+
+
+def _validation_errors(facts: list, statuses: list) -> tuple[int, list[str]]:
+    """Сколько событий валидны и тексты ошибок для повтора."""
+    valid_f, valid_s, rejected = parse_extraction({"facts": facts, "section_statuses": statuses})
+    lines = [f"- {json.dumps(r.raw, ensure_ascii=False)[:200]} → {'; '.join(r.errors)}" for r in rejected]
+    return len(valid_f) + len(valid_s), lines
 
 
 class Extractor:
-    """Отдельный вызов на каждый раздел: модель видит правила только этого раздела."""
+    """Отдельный вызов на каждый раздел: модель видит правила только этого раздела.
 
-    def __init__(self, llm: LLM, max_new_tokens: int = 512):
+    Если часть событий не прошла валидацию, модель один раз получает список ошибок
+    и возвращает исправленный JSON. Исправление принимается, только если валидных
+    событий стало больше, а не меньше.
+    """
+
+    def __init__(self, llm: LLM, max_new_tokens: int = 512, repair: bool = True):
         self.llm = llm
         self.max_new_tokens = max_new_tokens
+        self.repair = repair
+
+    @staticmethod
+    def _collect(obj: dict, section: Section, call: LLMCall) -> tuple[list, list, int]:
+        out: dict[str, list] = {"facts": [], "section_statuses": []}
+        off = 0
+        for key in ("facts", "section_statuses"):
+            items = obj.get(key) or []
+            if not isinstance(items, list):
+                call.error = f"{key}: ожидается список"
+                continue
+            for item in items:
+                if isinstance(item, dict):
+                    item = dict(item)
+                    item.setdefault("section", section.value)  # раздел известен из вызова
+                    if item["section"] != section.value:
+                        off += 1
+                        continue
+                out[key].append(item)  # не-словари отклонит валидация
+        return out["facts"], out["section_statuses"], off
 
     def __call__(self, turns: Turns, sections: Iterable[Section]) -> tuple[dict, list[LLMCall], ExtractionStats]:
         merged: dict[str, list] = {"facts": [], "section_statuses": []}
         calls: list[LLMCall] = []
         stats = ExtractionStats()
         for section in sections:
-            obj, call = json_call(self.llm, extractor_messages(section, turns), "extract", section.value,
-                                  max_new_tokens=self.max_new_tokens)
+            messages = extractor_messages(section, turns)
+            obj, call = json_call(self.llm, messages, "extract", section.value, max_new_tokens=self.max_new_tokens)
             calls.append(call)
             if obj is None:
                 stats.failed_sections += 1
                 continue
-            kept = 0
-            for key in ("facts", "section_statuses"):
-                items = obj.get(key) or []
-                if not isinstance(items, list):
-                    call.error = f"{key}: ожидается список"
-                    continue
-                for item in items:
-                    if isinstance(item, dict):
-                        item = dict(item)
-                        item.setdefault("section", section.value)  # раздел известен из вызова
-                        if item["section"] != section.value:
-                            stats.off_section += 1
-                            continue
-                    merged[key].append(item)  # не-словари отклонит валидация
-                    kept += 1
-            call.parsed = kept
+            facts, statuses, off = self._collect(obj, section, call)
+            stats.off_section += off
+            n_valid, errors = _validation_errors(facts, statuses)
+            if self.repair and errors:
+                stats.repairs += 1
+                retry_msgs = messages + [
+                    {"role": "assistant", "content": call.raw},
+                    {"role": "user", "content": VALIDATION_REPAIR_PROMPT.format(errors="\n".join(errors))},
+                ]
+                obj2, call2 = json_call(self.llm, retry_msgs, "extract_repair", section.value,
+                                        max_new_tokens=self.max_new_tokens)
+                calls.append(call2)
+                if obj2 is not None:
+                    f2, s2, _ = self._collect(obj2, section, call2)
+                    n_valid2, errors2 = _validation_errors(f2, s2)
+                    if n_valid2 >= n_valid and len(errors2) < len(errors):
+                        facts, statuses = f2, s2
+                        stats.repaired += 1
+                    call2.parsed = {"valid": n_valid2, "errors": len(errors2), "accepted": facts is f2}
+            call.parsed = len(facts) + len(statuses)
+            merged["facts"] += facts
+            merged["section_statuses"] += statuses
         return merged, calls, stats
 
 
@@ -170,6 +217,7 @@ class WriteResult:
     calls: list[LLMCall]
     stats: ExtractionStats
     classifier_failed: bool = False
+    turns: Turns = field(default_factory=list)  # что увидела модель после сжатия диалога
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -179,6 +227,8 @@ class WriteResult:
             "rejected": len(self.report.rejected),
             "off_section": self.stats.off_section,
             "failed_sections": self.stats.failed_sections,
+            "repairs": self.stats.repairs,
+            "repaired": self.stats.repaired,
             "classifier_failed": self.classifier_failed,
             "llm_calls": len(self.calls),
             "retries": sum(c.attempts - 1 for c in self.calls),
@@ -188,6 +238,7 @@ class WriteResult:
     def as_dict(self) -> dict[str, Any]:
         return {
             **self.summary(),
+            "turns": self.turns,
             "extraction": self.extraction,
             "report": self.report.to_rows(),
             "calls": [c.as_dict() for c in self.calls],
@@ -202,12 +253,15 @@ class WritePath:
         self.extractor = extractor or Extractor(llm)
 
     def process(self, user_id: str, turns: Turns, dialog_id: str | None = None) -> WriteResult:
+        # Модель видит реплики покупателя и только вопросы ассистента, без его длинных советов
+        turns = compact_dialog(turns)
         sections, ccall = self.classifier(turns)
         classifier_failed = not ccall.ok
         if classifier_failed:
             # Классификатор не ответил: лучше лишние вызовы extractor-а, чем потерянная аллергия
             sections = list(Section)
-        extraction, ecalls, stats = self.extractor(turns, sections)
+        extraction, ecalls, stats = self.extractor(turns, sections) if sections else (
+            {"facts": [], "section_statuses": []}, [], ExtractionStats())
         report = self.writer.write(user_id, extraction, dialog_id)
         failed = [c for c in [ccall, *ecalls] if not c.ok]
         if failed:
@@ -218,7 +272,8 @@ class WritePath:
                         user_id, dialog_id, now, "output",
                         {"task": c.task, "section": c.section, "raw": c.raw[:2000]}, [c.error or "ошибка"],
                     )
-        return WriteResult(dialog_id, sections, extraction, report, [ccall, *ecalls], stats, classifier_failed)
+        return WriteResult(dialog_id, sections, extraction, report, [ccall, *ecalls], stats, classifier_failed,
+                           turns)
 
 
 # --------------------------------------------------------------------------- read-path
@@ -282,7 +337,8 @@ class ReadPath:
     def __call__(self, user_id: str, message: str, history: Turns | None = None,
                  purchases: Iterable[PurchaseRecord] | None = None) -> ReadResult:
         qc, call, fallback = self.classifier(message, history)
-        bundle = self.builder.build(user_id, qc.query_types, qc.subject, purchases=purchases)
+        said = "\n".join([t["content"] for t in (history or []) if t["role"] == "user"] + [message])
+        bundle = self.builder.build(user_id, qc.query_types, qc.subject, purchases=purchases, reference_text=said)
         return ReadResult(qc, fallback, bundle, call)
 
 
@@ -309,7 +365,7 @@ class PharmacyAssistant:
         normalizer: Normalizer | None = None,
         clock: Callable[[], datetime] | None = None,
         use_llm_query_classifier: bool = True,
-        answer_max_new_tokens: int = 400,
+        answer_max_new_tokens: int = 512,
     ):
         self.llm = llm
         self.store = store or MemoryStore()

@@ -227,3 +227,79 @@ def test_openai_compat_request(monkeypatch):
     assert llm.chat([{"role": "user", "content": "x"}], max_new_tokens=32, json_mode=True) == "{}"
     assert captured["url"] == "http://localhost:11434/v1/chat/completions"
     assert captured["body"]["response_format"] == {"type": "json_object"} and captured["body"]["max_tokens"] == 32
+
+
+# ---------------------------------------------------------------- повтор при невалидных событиях
+
+
+def _extract_only(first, second=None):
+    answers = iter([first] + ([second] if second else []))
+
+    def respond(m, meta):
+        if meta["task"] == "classify_sections":
+            return j({"sections": ["medications"]})
+        return next(answers)
+    return respond
+
+
+def test_validation_repair_is_accepted_when_better():
+    store = MemoryStore()
+    bad = j({"facts": [{"section": "medications", "name": "Энап", "status": "принимает", "evidence": "Пью Энап"}]})
+    good = j({"facts": [{"section": "medications", "name": "Энап", "status": "active", "evidence": "Пью Энап"}]})
+    llm = ScriptedLLM(_extract_only(bad, good))
+    res = WritePath(llm, MemoryWriter(store)).process("u", TURNS, "d1")
+    assert [f.key for f in store.list_facts("u")] == ["эналаприл"]
+    assert res.stats.repairs == 1 and res.stats.repaired == 1
+    repair_call = llm.calls[-1]
+    assert repair_call["meta"]["task"] == "extract_repair" and "status" in repair_call["messages"][-1]["content"]
+
+
+def test_validation_repair_rejected_when_it_loses_valid_events():
+    store = MemoryStore()
+    first = j({"facts": [
+        {"section": "medications", "name": "Энап", "status": "active", "evidence": "Пью Энап"},
+        {"section": "medications", "name": "Омез", "status": "принимает", "evidence": "и Омез"},
+    ]})
+    worse = j({"facts": []})
+    llm = ScriptedLLM(_extract_only(first, worse))
+    res = WritePath(llm, MemoryWriter(store)).process("u", TURNS, "d1")
+    assert [f.key for f in store.list_facts("u")] == ["эналаприл"]  # исходный валидный факт сохранён
+    assert res.stats.repairs == 1 and res.stats.repaired == 0 and len(res.report.rejected) == 1
+
+
+def test_no_repair_when_everything_is_valid():
+    good = j({"facts": [{"section": "medications", "name": "Энап", "evidence": "Пью Энап"}]})
+    llm = ScriptedLLM(_extract_only(good))
+    res = WritePath(llm, MemoryWriter(MemoryStore())).process("u", TURNS, "d1")
+    assert res.stats.repairs == 0 and len(llm.calls) == 2
+
+
+# ---------------------------------------------------------------- сжатие диалога и справочник в ответе
+
+
+def test_write_path_hides_assistant_advice_from_extractor():
+    turns = [
+        {"role": "user", "content": "У меня гипертония, пью Лозап 50."},
+        {"role": "assistant", "content": "Лозап обычно 5 мг, рекомендую Магний B6. Есть ли у вас аллергия?"},
+        {"role": "user", "content": "Нет."},
+    ]
+    llm = ScriptedLLM(lambda m, meta: j({"sections": []}))
+    res = WritePath(llm, MemoryWriter(MemoryStore())).process("u", turns, "d1")
+    prompt = llm.calls[0]["messages"][-1]["content"]
+    assert "Магний" not in prompt and "5 мг" not in prompt
+    assert "Есть ли у вас аллергия?" in prompt and res.turns[1]["content"] == "Есть ли у вас аллергия?"
+
+
+def test_answer_context_has_reference_for_mentioned_drugs():
+    def respond(m, meta):
+        if meta["task"] == "classify_query":
+            return j({"query_types": ["general"], "subject": "self"})
+        return "ок"
+
+    llm = ScriptedLLM(respond)
+    bot = PharmacyAssistant(llm)
+    session = bot.session("u")
+    session.say("Здравствуйте, пью Лозап 50 по утрам.")
+    session.say("Спасибо.")
+    system = [c for c in llm.calls if c["meta"]["task"] == "answer"][-1]["messages"][0]["content"]
+    assert "СПРАВОЧНИК" in system and "лозартан" in system and "БРА" in system  # из истории, не из последней реплики

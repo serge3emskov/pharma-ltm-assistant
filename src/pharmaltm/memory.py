@@ -106,6 +106,8 @@ class MemoryWriter:
     def write(self, user_id: str, extraction: str | dict, dialog_id: str | None = None) -> WriteReport:
         """Принимает сырой ответ extractor-а, валидирует и применяет события."""
         facts, statuses, rejections = parse_extraction(extraction)
+        facts, misplaced = self._reference_check(facts)
+        rejections += misplaced
         now = self.clock()
         report = WriteReport(rejected=rejections)
         with self.store.transaction():
@@ -117,6 +119,33 @@ class MemoryWriter:
             for st in statuses:
                 report.applied += self.apply_section_status(user_id, st, dialog_id, now)
         return report
+
+    # ------------------------------------------------------------------ проверка по справочнику
+    _NOT_DRUG_SECTIONS = (Section.CHRONIC_CONDITIONS, Section.REPORTED_DIAGNOSES, Section.SYMPTOMS)
+
+    def _reference_check(self, facts: list[Any]) -> tuple[list[Any], list[Rejection]]:
+        """Препарат в разделе болезней или симптомов — ошибка раздела, а не новый диагноз.
+
+        Срабатывает только на точное совпадение со справочником препаратов, когда название
+        не найдено в справочнике самого раздела: «Варфарин» в диагнозах отклоняется,
+        «давление» в хронических — нет.
+        """
+        kept: list[Any] = []
+        rejected: list[Rejection] = []
+        for ev in facts:
+            section = Section(ev.section)
+            if section in self._NOT_DRUG_SECTIONS:
+                own = self.normalizer.entity(section, ev.name)
+                drug = self.normalizer.drugs.lookup(ev.name)
+                if own.method not in ("exact", "prefix") and drug.method in ("exact", "prefix"):
+                    rejected.append(Rejection(
+                        kind="fact", raw=ev.model_dump(),
+                        errors=[f"«{ev.name}» есть в справочнике препаратов ({drug.normalized}) — "
+                                f"не относится к разделу {section.value}"],
+                    ))
+                    continue
+            kept.append(ev)
+        return kept, rejected
 
     # ------------------------------------------------------------------ факты
     def apply_fact(self, user_id: str, ev: Any, dialog_id: str | None, now: datetime) -> list[AppliedChange]:
