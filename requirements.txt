@@ -1,0 +1,4 @@
+pydantic>=2.6
+rapidfuzz>=3.0
+pandas>=2
+pytest>=8
