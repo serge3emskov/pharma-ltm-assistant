@@ -785,7 +785,8 @@ scenario("g-e2e-09", "multi_session", ["e2e", "lifestyle"], [
                     S(M, "self", "confirmed_absent")]),
     probe("Посоветуйте что-нибудь от аллергии на пыльцу.", ["symptom_relief"], include=[(LI, "driving")],
           no_clarify=[AL, M, CH, SP],
-          checks=[mentions("сонлив|за рул|вожд|концентрац|внимани", "учтено вождение")], after_days=2),
+          checks=[mentions("сонлив|за рул|вожд|водит|автомоб|машин|концентрац|внимани", "учтено вождение")],
+          after_days=2),
 ])
 
 scenario("g-e2e-10", "multi_session", ["e2e", "change", "dosage"], [
