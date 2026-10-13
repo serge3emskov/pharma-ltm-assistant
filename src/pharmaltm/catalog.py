@@ -97,6 +97,59 @@ def clean_trade_name(value: Any) -> str:
 # =========================================================================== загрузка ГРЛС
 
 
+# Путь введения по названию лекарственной формы. Нужен, потому что в выгрузке ГРЛС нет кодов АТХ,
+# а правило «НПВП при язве» не должно срабатывать на гель для наружного применения.
+ROUTES = ("systemic", "skin", "eye", "ear", "nasal", "vaginal", "mucosal", "inhal")
+_ROUTE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("systemic", re.compile(r"внутрь|инъекц|инфуз|внутривен|внутримышеч|подкож|ректальн|подъязычн|"
+                            r"трансдермальн|защечн")),
+    ("eye", re.compile(r"глазн|офтальм|конъюнктив")),
+    ("ear", re.compile(r"ушн")),
+    ("nasal", re.compile(r"назальн|в нос|интраназ")),
+    ("vaginal", re.compile(r"вагинальн")),
+    ("inhal", re.compile(r"ингаляц")),
+    ("mucosal", re.compile(r"для рассасывания|пастилк|леденц|для местного|полоскани|стоматолог|зубн|"
+                           r"для приготовления раствора для местного")),
+    ("skin", re.compile(r"наружн|накожн|мазь|крем|гель|лосьон|шампун|линимент|пена|пластыр|присыпк|"
+                        r"лак для ногтей|паста")),
+    ("systemic", re.compile(r"таблет|капсул|драже|сироп|суспенз|гранул|порошок|раствор|капли|эликсир|"
+                            r"настойк|суппозит|лиофилизат|концентрат|эмульс")),
+)
+_OTC_RE = re.compile(r"без\s+рецепта")
+_RX_RE = re.compile(r"по\s+рецепту")
+
+
+def form_route(form_name: str) -> str | None:
+    """«гель для наружного применения» → skin; «таблетки, покрытые оболочкой» → systemic."""
+    f = fold(form_name)
+    for route, pattern in _ROUTE_PATTERNS:
+        if pattern.search(f):
+            return route
+    return None
+
+
+def parse_forms(value: Any) -> tuple[tuple[str, ...], bool | None]:
+    """Пути введения и порядок отпуска из ячейки «Формы выпуска».
+
+    Ячейка ГРЛС: «таблетки, 200 мг, 10 шт. - блистеры - пачки картонные - Без рецепта; гель для наружного
+    применения, 5 %, 50 г - тубы - По рецепту; …». Отпуск: True — есть упаковка без рецепта, False — все
+    упаковки по рецепту, None — не указано.
+    """
+    if value is None:
+        return (), None
+    text = fold(str(value))
+    routes: list[str] = []
+    for seg in text.split(";"):
+        seg = seg.strip()
+        if not seg:
+            continue
+        route = form_route(seg.split(",")[0])
+        if route and route not in routes:
+            routes.append(route)
+    otc = True if _OTC_RE.search(text) else (False if _RX_RE.search(text) else None)
+    return tuple(routes), otc
+
+
 @dataclass(frozen=True)
 class Product:
     """Одна строка реестра: торговое наименование и его состав."""
@@ -106,16 +159,19 @@ class Product:
     atc: tuple[str, ...] = ()
     reg_number: str | None = None
     form: str | None = None
+    routes: tuple[str, ...] = ()   # пути введения из лекарственных форм
+    otc: bool | None = None        # есть ли упаковка без рецепта
 
 
-# Роль колонки → варианты набора ключевых слов (все слова варианта должны быть в заголовке)
+# Роль колонки → варианты набора ключевых слов (все слова варианта должны быть в заголовке).
+# Английские варианты — заголовки набора открытых данных Минздрава (CSV).
 COLUMN_KEYWORDS: dict[str, tuple[tuple[str, ...], ...]] = {
-    "trade_name": (("торгов",),),
-    "inn": (("мнн",), ("непатентован",), ("группировочн",)),
+    "trade_name": (("торгов",), ("tradename",)),
+    "inn": (("мнн",), ("непатентован",), ("группировочн",), ("internationalname",)),
     "atc": (("атх",), ("анатомо",)),
-    "reg_number": (("регистрацион", "номер"), ("номер", "ру")),
-    "form": (("форм", "выпуск"), ("лекарствен", "форм")),
-    "annulled": (("аннулир",), ("исключ",)),
+    "reg_number": (("регистрацион", "номер"), ("regnumber",)),
+    "form": (("форм", "выпуск"), ("лекарствен", "форм"), ("formrelease",)),
+    "annulled": (("аннулир",), ("исключ",), ("cancellationdate",)),
 }
 REQUIRED_COLUMNS = ("trade_name", "inn")
 EXCLUDED_TABLE_RE = re.compile(r"исключ|аннулир")
@@ -273,6 +329,23 @@ def _tables_from_bytes(name: str, ext: str, data: bytes) -> Iterator[tuple[str, 
         yield name, _csv_rows(data)
 
 
+GRLS_EXTENSIONS = (".zip", ".xlsx", ".xls", ".csv")
+
+
+def grls_files(path: str | Path | Iterable[str | Path]) -> list[Path]:
+    """Файлы выгрузки: один файл, список файлов или папка (все .zip/.xlsx/.xls/.csv в ней).
+
+    ГРЛС выгружается набором файлов по статусу записи: «Действующий», «Изменённый», «Истёкший»,
+    «Исключённый»… — папку можно передать целиком.
+    """
+    if isinstance(path, (str, Path)):
+        p = Path(path)
+        if p.is_dir():
+            return sorted(x for x in p.iterdir() if x.is_file() and x.suffix.lower() in GRLS_EXTENSIONS)
+        return [p]
+    return [Path(x) for x in path]
+
+
 def iter_tables(path: str | Path) -> Iterator[tuple[str, Iterator[Sequence[Any]]]]:
     """Таблицы из файла выгрузки: .zip (с xls/xlsx/csv внутри), .xlsx, .xls, .csv."""
     path = Path(path)
@@ -289,20 +362,23 @@ def iter_tables(path: str | Path) -> Iterator[tuple[str, Iterator[Sequence[Any]]
 
 
 def load_grls(
-    path: str | Path,
+    path: str | Path | Iterable[str | Path],
     *,
     columns: dict[str, str | int] | None = None,
     include_excluded: bool = False,
     search_rows: int = 30,
 ) -> tuple[list[Product], LoadReport]:
-    """Читает выгрузку реестра. Возвращает строки-препараты и отчёт о том, что и почему пропущено.
+    """Читает выгрузку реестра (файл, список файлов или папку). Возвращает строки-препараты и отчёт
+    о том, что и почему пропущено.
 
     columns — явное сопоставление роли и колонки: {"trade_name": "Торговое наименование", "inn": 8, "atc": "АТХ"}.
-    Таблицы исключённых записей и строки с датой аннулирования пропускаются, если не include_excluded.
+    Файлы и таблицы исключённых записей и строки с датой аннулирования пропускаются, если не include_excluded.
     """
-    report = LoadReport(str(path))
+    files = grls_files(path)
+    report = LoadReport(", ".join(str(f) for f in files))
     products: list[Product] = []
-    for name, rows_iter in iter_tables(path):
+    tables = ((name, rows) for f in files for name, rows in iter_tables(f))
+    for name, rows_iter in tables:
         head = list(islice(rows_iter, search_rows + 1))
         tr = TableReport(name=name, used=False)
         report.tables.append(tr)
@@ -338,6 +414,7 @@ def load_grls(
             if not include_excluded and _cell_text(cell(row, "annulled")):
                 skipped["аннулировано"] += 1
                 continue
+            routes, otc = parse_forms(cell(row, "form"))
             products.append(Product(
                 trade_name=trade,
                 components=parse_inn(cell(row, "inn")),
@@ -345,6 +422,7 @@ def load_grls(
                 reg_number=(str(cell(row, "reg_number")).strip() or None) if cell(row, "reg_number") else None,
                 form=(re.sub(r"\s+", " ", str(cell(row, "form"))).strip()[:200] or None)
                 if cell(row, "form") else None,
+                routes=routes, otc=otc,
             ))
             tr.products += 1
         tr.skipped = dict(skipped)
@@ -364,6 +442,8 @@ class DrugInfo:
     atc: tuple[str, ...]
     matched: bool
     method: str = "exact"
+    routes: tuple[str, ...] = ()   # пути введения (известны из ГРЛС)
+    otc: bool | None = None        # True — есть безрецептурные формы, False — только по рецепту, None — неизвестно
 
     @property
     def label(self) -> str:
@@ -383,6 +463,8 @@ class _Entry:
     classes: tuple[str, ...] = ()
     sources: set[str] = field(default_factory=set)
     products: int = 0
+    routes: set[str] = field(default_factory=set)
+    otc: set[bool] = field(default_factory=set)
 
 
 # Торговые наименования, совпадающие с обычными словами: в речи покупателя это не препарат.
@@ -406,6 +488,8 @@ class DrugCatalog:
         self._alias_source: dict[str, str] = {}
         self._ambiguous: dict[str, set[str]] = {}
         self._alias_atc: dict[str, set[str]] = {}
+        self._alias_routes: dict[str, set[str]] = {}
+        self._alias_otc: dict[str, set[bool]] = {}
         self._lexicon: Lexicon | None = None
         self.stats: Counter = Counter()
         for e in (ref.DRUGS if seed is None else seed):
@@ -424,7 +508,8 @@ class DrugCatalog:
         entry.sources.add(source)
         return entry
 
-    def _register_alias(self, alias: str, canonical: str, source: str, atc: Iterable[str] = ()) -> None:
+    def _register_alias(self, alias: str, canonical: str, source: str, atc: Iterable[str] = (),
+                        product: Product | None = None) -> None:
         key = clean_name(alias)
         if not key:
             return
@@ -444,6 +529,11 @@ class DrugCatalog:
             return
         if atc and source != "seed":
             self._alias_atc.setdefault(key, set()).update(atc)
+        if product is not None:
+            if product.routes:
+                self._alias_routes.setdefault(key, set()).update(product.routes)
+            if product.otc is not None:
+                self._alias_otc.setdefault(key, set()).add(product.otc)
         self._lexicon = None
 
     def _add_seed(self, e: LexEntry) -> None:
@@ -466,9 +556,12 @@ class DrugCatalog:
             self.stats["no_inn"] += 1
         entry = self._entry(canonical, components, source)
         entry.atc.update(p.atc)
+        entry.routes.update(p.routes)
+        if p.otc is not None:
+            entry.otc.add(p.otc)
         entry.products += 1
         self.stats["products"] += 1
-        self._register_alias(p.trade_name, canonical, source, p.atc)
+        self._register_alias(p.trade_name, canonical, source, p.atc, p)
         return canonical
 
     def add_products(self, products: Iterable[Product], source: str = "grls") -> int:
@@ -480,7 +573,7 @@ class DrugCatalog:
         return n
 
     @classmethod
-    def from_grls(cls, path: str | Path, **kwargs: Any) -> tuple["DrugCatalog", LoadReport]:
+    def from_grls(cls, path: str | Path | Iterable[str | Path], **kwargs: Any) -> tuple["DrugCatalog", LoadReport]:
         catalog = cls()
         products, report = load_grls(path, **kwargs)
         catalog.add_products(products)
@@ -549,11 +642,40 @@ class DrugCatalog:
         e = self._entries.get(canonical)
         return tuple(sorted(e.atc)) if e else ()
 
+    def _alias_value(self, mapping: dict[str, set], canonical: str, raw: str | None) -> set | None:
+        """Значение для торгового наименования (самый длинный префикс по словам), если оно известно."""
+        if not raw:
+            return None
+        tokens = clean_name(raw).split()
+        for n in range(len(tokens), 0, -1):
+            key = " ".join(tokens[:n])
+            if key in mapping and self._alias_owner.get(key, canonical) == canonical:
+                return mapping[key]
+        return None
+
+    def routes_for(self, canonical: str, raw: str | None = None) -> tuple[str, ...]:
+        found = self._alias_value(self._alias_routes, canonical, raw)
+        if found is None:
+            e = self._entries.get(canonical)
+            found = e.routes if e else set()
+        return tuple(r for r in ROUTES if r in found)
+
+    def otc_for(self, canonical: str, raw: str | None = None) -> bool | None:
+        """True — есть безрецептурная форма; False — только по рецепту; None — неизвестно."""
+        found = self._alias_value(self._alias_otc, canonical, raw)
+        if found is None:
+            e = self._entries.get(canonical)
+            found = e.otc if e else set()
+        return True if True in found else (False if False in found else None)
+
+    def _info(self, raw: str, canonical: str, method: str = "exact") -> DrugInfo:
+        return DrugInfo(raw, canonical, self.components(canonical), self.atc_for(canonical, raw), True, method,
+                        self.routes_for(canonical, raw), self.otc_for(canonical, raw))
+
     def info(self, nr: NormResult) -> DrugInfo:
         if not nr.matched:
             return DrugInfo(nr.raw, nr.normalized, (nr.normalized,), (), False, nr.method)
-        return DrugInfo(nr.raw, nr.normalized, self.components(nr.normalized),
-                        self.atc_for(nr.normalized, nr.raw), True, nr.method)
+        return self._info(nr.raw, nr.normalized, nr.method)
 
     def resolve(self, name: str) -> DrugInfo:
         return self.info(self.lexicon().lookup(name))
@@ -562,7 +684,7 @@ class DrugCatalog:
         """Факт памяти (ключ + как называл покупатель) → сведения о препарате."""
         raw = raw_names[0] if raw_names else canonical
         if canonical in self._entries:
-            return DrugInfo(raw, canonical, self.components(canonical), self.atc_for(canonical, raw), True)
+            return self._info(raw, canonical)
         nr = self.lexicon().lookup(raw)  # ключ не из этого справочника: пробуем по названию
         return self.info(nr) if nr.matched else DrugInfo(raw, canonical, (canonical,), (), False, "unmatched")
 
@@ -581,6 +703,9 @@ class DrugCatalog:
             "entries_by_source": dict(by_source),
             "combinations": sum(1 for e in self._entries.values() if len(e.components) > 1),
             "with_atc": with_atc,
+            "with_routes": sum(1 for e in self._entries.values() if e.routes),
+            "otc": sum(1 for e in self._entries.values() if True in e.otc),
+            "rx_only": sum(1 for e in self._entries.values() if e.otc == {False}),
             "aliases": len(self._alias_owner),
             "ambiguous_aliases": len(self._ambiguous),
             "products": self.stats["products"],
@@ -598,9 +723,12 @@ class DrugCatalog:
             "version": 1,
             "entries": [{"canonical": e.canonical, "components": list(e.components), "aliases": e.aliases,
                          "atc": sorted(e.atc), "classes": list(e.classes), "sources": sorted(e.sources),
-                         "products": e.products} for e in self._entries.values()],
+                         "products": e.products, "routes": sorted(e.routes), "otc": sorted(e.otc)}
+                        for e in self._entries.values()],
             "alias_source": self._alias_source,
             "alias_atc": {k: sorted(v) for k, v in self._alias_atc.items()},
+            "alias_routes": {k: sorted(v) for k, v in self._alias_routes.items()},
+            "alias_otc": {k: sorted(v) for k, v in self._alias_otc.items()},
             "ambiguous": {k: sorted(v) for k, v in self._ambiguous.items()},
             "stats": dict(self.stats),
         }
@@ -614,13 +742,16 @@ class DrugCatalog:
         cat = cls(seed=[], alias_atc={})
         for d in data["entries"]:
             e = _Entry(d["canonical"], tuple(d["components"]), list(d["aliases"]), set(d["atc"]),
-                       tuple(d["classes"]), set(d["sources"]), d["products"])
+                       tuple(d["classes"]), set(d["sources"]), d["products"], set(d.get("routes", ())),
+                       set(d.get("otc", ())))
             cat._entries[e.canonical] = e
             cat._by_components.setdefault(frozenset(e.components), e.canonical)
             for a in e.aliases:
                 cat._alias_owner.setdefault(clean_name(a), e.canonical)
         cat._alias_source = dict(data["alias_source"])
         cat._alias_atc = {k: set(v) for k, v in data["alias_atc"].items()}
+        cat._alias_routes = {k: set(v) for k, v in data.get("alias_routes", {}).items()}
+        cat._alias_otc = {k: set(v) for k, v in data.get("alias_otc", {}).items()}
         cat._ambiguous = {k: set(v) for k, v in data["ambiguous"].items()}
         cat.stats = Counter(data["stats"])
         return cat

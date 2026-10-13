@@ -15,6 +15,7 @@ from pharmaltm.catalog import (
     detect_columns,
     find_header,
     load_grls,
+    parse_forms,
     parse_atc,
     parse_inn,
 )
@@ -148,7 +149,7 @@ def test_load_csv_cp1251_semicolon(tmp_path):
     path = tmp_path / "grls.csv"
     path.write_bytes(buf.getvalue().encode("cp1251"))
     products, _ = load_grls(path)
-    assert products[0] == Product("Нурофен", ("ибупрофен",), ("M01AE01",), "ЛП-000001", "таблетки")
+    assert products[0] == Product("Нурофен", ("ибупрофен",), ("M01AE01",), "ЛП-000001", "таблетки", ("systemic",))
 
 
 def test_load_xls(tmp_path):
@@ -243,3 +244,118 @@ def test_seed_catalog_is_default():
     n = Normalizer()
     assert len(n.catalog) == len(DrugCatalog()) and n.catalog.summary()["products"] == 0
     assert n.entity(Section.MEDICATIONS, "Вольтарен Эмульгель").normalized == "диклофенак"
+
+
+# ---------------------------------------------------------------- формат выгрузки ГРЛС (октябрь 2026)
+# Реестр выгружается набором xlsx по статусу записи. Над заголовком — строка с датой, перед данными —
+# строка-раздел со статусом, в конце — строка с временем выгрузки. Две пустые колонки слева, у колонки
+# страны нет заголовка, кодов АТХ нет; отпуск по рецепту и лекарственная форма — в «Формах выпуска».
+
+REAL_HEADER = [None, None, "Номер регистрационного удостоверения", "Дата регистрации",
+               "Дата окончания действия регистрационного удостоверения",
+               "Дата аннулирования регистрацион- ного удостоверения",
+               "Юридическое лицо, на имя которого выдано регистрационное удостоверение", None,
+               "Торговое наименование лекарственного препарата",
+               "Международное непатентованное или химическое наименование", "Формы выпуска",
+               "Сведения о стадиях производства", "Нормативная документация", "Фармако-терапевтическая группа",
+               "Наличие лекарственного препарата в перечне ЖНВЛП",
+               "Наличие в лекарственном препарате наркотических средств, психотропных веществ", "Орфанный"]
+
+OTC, RX = "Без рецепта", "По рецепту"
+REAL_ROWS = [  # торговое наименование, МНН, формы выпуска
+    ("Нурофен", "Ибупрофен", f"таблетки, покрытые оболочкой, 200 мг, 10 шт. - блистеры - пачки картонные - {OTC}; "),
+    ("Нурофен", "Ибупрофен", f"гель для наружного применения, 5 %, 50 г - тубы - {OTC}; "),
+    ("Фастум", "Кетопрофен", f"гель для наружного применения, 2.5 %, 30 г - тубы - {OTC}; "),
+    ("Цефтриаксон", "Цефтриаксон",
+     f"порошок для приготовления раствора для внутривенного и внутримышечного введения, 1 г - флаконы - {RX}; "),
+    ("Омез", "Омепразол", f"капсулы кишечнорастворимые, 20 мг - {RX}; капсулы, 10 мг - {OTC}; "),
+    ("Лонсурф", "трифлуридин+[типирацил]", f"таблетки покрытые пленочной оболочкой, 15 мг+6.14 мг - {RX}; "),
+    ("Ингавирин", "Имидазолилэтанамид пентандиовой кислоты", f"капсулы, 90 мг - {OTC}; "),
+    ("Метипред", "Метилпреднизолон", f"таблетки, 4 мг, 30 таб. - флаконы - {RX}; "),
+    ("Тридерм", "Бетаметазон + Гентамицин + Клотримазол", f"крем для наружного применения, 15 г - тубы - {RX}; "),
+    ("Визин", "Тетризолин", f"капли глазные, 0.05 %, 15 мл - флакон-капельницы - {OTC}; "),
+    ("Лиотон 1000", "Гепарин натрия", f"гель для наружного применения, 1000 МЕ/г, 50 г - {OTC}; "),
+    ("Валсакор", "Валсартан", f"таблетки, покрытые пленочной оболочкой, 80 мг - {RX}; "),
+    ("Кагоцел", "\\~", f"таблетки, 12 мг - {OTC}; "),
+]
+
+
+def _real_xlsx(status: str, rows) -> bytes:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = status
+    ws.append([status, None, None, "Государственный реестр лекарственных средств по состоянию на 13.10.2026"])
+    ws.append(REAL_HEADER)
+    ws.append([None, None, status])
+    for i, (trade, inn, forms) in enumerate(rows):
+        ws.append([None, None, f"ЛП-{i:06d}", "15.07.2014", None, None, "ООО «Фарма»", "Россия", trade, inn, forms,
+                   "Производитель", None, "группа", "Нет", "Нет", None])
+    ws.append([None, None, "13.10.2026 05:00:00"])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@pytest.fixture(scope="module")
+def grls_dir(tmp_path_factory):
+    d = tmp_path_factory.mktemp("grls_real")
+    (d / "grls2026-10-13-1-Действующий.xlsx").write_bytes(_real_xlsx("Действующий", REAL_ROWS))
+    (d / "grls2026-10-13-1-Истёкший.xlsx").write_bytes(_real_xlsx("Истёкший", [("Старинол", "Парацетамол",
+                                                                                  f"таблетки - {OTC}; ")]))
+    (d / "grls2026-10-13-1-Исключённый.xlsx").write_bytes(_real_xlsx("Исключённый", [("Удалённый", "Ибупрофен",
+                                                                                      f"таблетки - {OTC}; ")]))
+    (d / "catalog_cache.json.gz").write_bytes(b"")  # посторонний файл в папке
+    return d
+
+
+def test_load_real_format_folder(grls_dir):
+    products, report = load_grls(grls_dir)
+    assert [t.used for t in report.tables] == [True, False, True]  # исключённые пропущены по имени файла
+    main = next(t for t in report.tables if "Действующий" in t.name)
+    assert main.header_row == 1 and main.columns["trade_name"] == 8 and main.columns["inn"] == 9
+    assert main.columns["form"] == 10 and main.columns["annulled"] == 5 and "atc" not in main.columns
+    assert main.products == len(REAL_ROWS) and main.skipped == {"нет торгового наименования": 2}
+    assert {p.trade_name for p in products} == {r[0] for r in REAL_ROWS} | {"Старинол"}
+    lonsurf = next(p for p in products if p.trade_name == "Лонсурф")
+    assert lonsurf.components == ("трифлуридин", "типирацил") and lonsurf.otc is False
+
+
+@pytest.mark.parametrize("forms, routes, otc", [
+    (REAL_ROWS[0][2], ("systemic",), True),
+    (REAL_ROWS[1][2], ("skin",), True),
+    (REAL_ROWS[3][2], ("systemic",), False),
+    (REAL_ROWS[4][2], ("systemic",), True),        # 20 мг по рецепту, 10 мг без рецепта
+    (REAL_ROWS[9][2], ("eye",), True),
+    ("спрей назальный дозированный, 0.1 % - Без рецепта; капли назальные, 0.05 % - Без рецепта", ("nasal",), True),
+    ("суппозитории ректальные, 100 мг; суппозитории вагинальные, 500 мг", ("systemic", "vaginal"), None),
+    ("гель для приема внутрь, 15 г - пакеты", ("systemic",), None),
+    ("таблетки для рассасывания, 8.75 мг", ("mucosal",), None),
+    ("пластырь трансдермальный", ("systemic",), None),
+    ("аэрозоль для ингаляций дозированный", ("inhal",), None),
+    (None, (), None),
+])
+def test_parse_forms(forms, routes, otc):
+    assert parse_forms(forms) == (routes, otc)
+
+
+@pytest.fixture(scope="module")
+def real_catalog(grls_dir) -> DrugCatalog:
+    return DrugCatalog.from_grls(grls_dir)[0]
+
+
+def test_routes_and_otc_in_catalog(real_catalog):
+    assert real_catalog.resolve("Нурофен").routes == ("systemic", "skin")
+    assert real_catalog.resolve("Фастум гель").routes == ("skin",)
+    assert real_catalog.resolve("Цефтриаксон").otc is False
+    assert real_catalog.resolve("Омез 10 мг").otc is True
+    assert real_catalog.resolve("Энап").otc is None  # в выгрузке нет — неизвестно
+    s = real_catalog.summary()
+    assert s["with_routes"] >= 10 and s["rx_only"] >= 4 and s["otc"] >= 6
+
+
+def test_save_load_keeps_routes_and_otc(real_catalog, tmp_path):
+    path = tmp_path / "c.json.gz"
+    real_catalog.save(path)
+    loaded = DrugCatalog.load(path)
+    for name in ("Нурофен", "Фастум", "Цефтриаксон", "Омез", "Визин"):
+        assert loaded.resolve(name) == real_catalog.resolve(name)

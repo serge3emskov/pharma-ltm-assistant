@@ -370,3 +370,46 @@ def test_restrictions_do_not_repeat_pair_alert(checker):
     assert [a.rule_id for a in rep.alerts] == ["nsaid+anticoagulant"]
     assert all(r.rule_id != "nsaid+anticoagulant" for r in rep.restrictions)
     assert any(r.rule_id == "azole+warfarin" for r in rep.restrictions)
+
+
+# ---------------------------------------------------------------- справочник в формате выгрузки ГРЛС
+
+
+@pytest.fixture(scope="module")
+def real_checker(tmp_path_factory):
+    from test_catalog import REAL_ROWS, _real_xlsx
+
+    d = tmp_path_factory.mktemp("grls_safety")
+    (d / "grls-Действующий.xlsx").write_bytes(_real_xlsx("Действующий", REAL_ROWS))
+    return SafetyChecker(DrugCatalog.from_grls(d)[0])
+
+
+@pytest.mark.parametrize("name, has, has_not", [
+    ("Фастум гель", set(), {"nsaid"}),                          # без АТХ: местную форму видно по «Формам выпуска»
+    ("Нурофен", {"nsaid"}, set()),                              # таблетки и гель под одним наименованием
+    ("Валсакор", {"arb", "antihypertensive"}, set()),            # класс по МНН, когда АТХ нет
+    ("Метипред", {"corticosteroid_systemic"}, set()),
+    ("Тридерм", set(), {"corticosteroid_systemic"}),
+    ("Визин", set(), {"decongestant_nasal"}),                    # глазные капли
+    ("Лиотон 1000", set(), {"anticoagulant"}),
+])
+def test_classes_without_atc(real_checker, name, has, has_not):
+    d = real_checker.resolve(name)
+    assert d.info.matched and has <= d.classes and not (has_not & d.classes), (d.info, d.classes)
+
+
+def test_topical_nsaid_with_ulcer_has_no_alert(real_checker):
+    p = profile_of(real_checker, [f("chronic_conditions", "язва желудка")])
+    assert real_checker.report(p, "Болит колено, Фастум гель можно?").alerts == []
+    assert [a.rule_id for a in real_checker.report(p, "А Нурофен?").alerts] == ["nsaid+ulcer"]
+
+
+def test_rx_only_drug_in_answer(real_checker):
+    p = profile_of(real_checker, [f("medications", "Метипред")])
+    post = real_checker.post_check("Можно взять Цефтриаксон или Омез.", p)
+    assert [(a.rule_id, a.drug.canonical) for a in post.appended] == [("rx_only", "цефтриаксон")]
+    assert "Цефтриаксон — по ГРЛС отпускается только по рецепту" in post.text
+    covered = real_checker.post_check("Цефтриаксон отпускается по рецепту, нужен врач.", p)
+    assert not covered.appended and covered.covered[0].rule_id == "rx_only"
+    # назначенный препарат из памяти — не повод напоминать о рецепте
+    assert real_checker.report(p, "Метипред можно пить утром?").alerts == []

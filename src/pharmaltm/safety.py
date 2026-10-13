@@ -63,12 +63,17 @@ class DrugClass(_Model):
     atc: list[str] = Field(default_factory=list)
     inn: list[str] = Field(default_factory=list)
     exclude_atc: list[str] = Field(default_factory=list)
+    # То же по путям введения из лекарственных форм ГРЛС (в выгрузке нет кодов АТХ)
+    exclude_routes: list[Literal["systemic", "skin", "eye", "ear", "nasal", "vaginal", "mucosal", "inhal"]] = \
+        Field(default_factory=list)
     allergy_keys: list[str] = Field(default_factory=list)
     cross_allergy: Level | None = None
 
-    def contains(self, components: Iterable[str], atc: Sequence[str]) -> bool:
+    def contains(self, components: Iterable[str], atc: Sequence[str], routes: Sequence[str] = ()) -> bool:
         if atc and self.exclude_atc and all(any(c.startswith(p) for p in self.exclude_atc) for c in atc):
             return False  # все формы препарата местные (гель, капли в глаза и т. п.)
+        if routes and self.exclude_routes and set(routes) <= set(self.exclude_routes):
+            return False
         if any(c.startswith(p) for c in atc for p in self.atc):
             return True
         return bool(set(self.inn) & set(components))
@@ -147,8 +152,8 @@ class DuplicateRule(_Model):
 class RuleSet(_Model):
     classes: list[DrugClass]
     rules: list[Rule]
-    builtin: dict[Literal["allergy_direct", "allergy_class", "allergy_cross", "intolerance", "age_unknown"],
-                  BuiltinRule]
+    builtin: dict[Literal["allergy_direct", "allergy_class", "allergy_cross", "intolerance", "age_unknown",
+                          "rx_only"], BuiltinRule]
     duplicate_ingredient: DuplicateRule
 
     @model_validator(mode="after")
@@ -246,12 +251,16 @@ class Profile:
 # =========================================================================== результат проверки
 
 
+def _cap(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
 @dataclass(frozen=True)
 class Alert:
     rule_id: str
     level: str
     drug: SafetyDrug
-    trigger_kind: Literal["drug", "duplicate", "condition", "state", "age", "lifestyle", "allergy"]
+    trigger_kind: Literal["drug", "duplicate", "condition", "state", "age", "lifestyle", "allergy", "dispensing"]
     trigger_key: str
     trigger: str
     message: str
@@ -267,6 +276,11 @@ class Alert:
         return f"{self.drug.label} + {self.other.label}{suffix}"
 
     def render(self) -> str:
+        return _cap(self._render())
+
+    def _render(self) -> str:
+        if self.trigger_kind == "dispensing":
+            return f"{self.drug.label} — {self.message}."
         level = LEVEL_LABELS[self.level]
         via = f"компонент: {', '.join(self.via)}" if self.via else ""
         if self.other is not None:
@@ -289,7 +303,7 @@ class Restriction:
     message: str
 
     def render(self) -> str:
-        return f"{self.target} — {LEVEL_LABELS[self.level]} ({self.trigger}): {self.message}"
+        return _cap(f"{self.target} — {LEVEL_LABELS[self.level]} ({self.trigger}): {self.message}")
 
     def as_dict(self) -> dict[str, Any]:
         return {"rule": self.rule_id, "level": self.level, "target": self.target, "trigger": self.trigger,
@@ -372,12 +386,13 @@ class SafetyChecker:
         self._replaces["duplicate_ingredient"] = set(self.rules.duplicate_ingredient.replaces)
 
     # ------------------------------------------------------------------ препараты
-    def classes_for(self, components: Iterable[str], atc: Sequence[str]) -> frozenset[str]:
+    def classes_for(self, components: Iterable[str], atc: Sequence[str], routes: Sequence[str] = ()) -> frozenset[str]:
         comps = list(components)
-        return frozenset(c.id for c in self.rules.classes if c.contains(comps, atc))
+        return frozenset(c.id for c in self.rules.classes if c.contains(comps, atc, routes))
 
     def drug(self, info: DrugInfo, origin: str, status: str | None = None) -> SafetyDrug:
-        return SafetyDrug(info, self.classes_for(info.components, info.atc), origin, status)  # type: ignore[arg-type]
+        return SafetyDrug(info, self.classes_for(info.components, info.atc, info.routes), origin,  # type: ignore[arg-type]
+                          status)
 
     def resolve(self, name: str, origin: str = "question") -> SafetyDrug:
         return self.drug(self.catalog.resolve(name), origin)
@@ -575,9 +590,16 @@ class SafetyChecker:
             if d.info.matched and all(d.canonical != c.canonical for c in cands):
                 cands.append(d)
         found: list[Alert] = []
+        rx = self.rules.builtin["rx_only"]
+        taking = {m.canonical for m in profile.medications}
         for i, d in enumerate(cands):
             found += self._allergy_alerts(d, profile)
             found += self._profile_alerts(d, profile)
+            # Только по рецепту (по ГРЛС): ассистент такой препарат не предлагает, а покупателю нужен рецепт.
+            # Препарат, который покупатель уже принимает, — назначен врачом, о нём не напоминаем
+            if d.info.otc is False and d.canonical not in taking:
+                found.append(self._alert("rx_only", rx.level, d, "dispensing", "dispensing", "рецептурный препарат",
+                                         rx.message, rx.reason, order=-3))
             for o in profile.medications:
                 found += self._pair_alerts(d, o)
             for o in cands[i + 1:]:
