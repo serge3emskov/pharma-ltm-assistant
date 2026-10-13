@@ -1,0 +1,20 @@
+{"id": "q01", "text": "Что выпить от головной боли?", "query_types": ["symptom_relief"], "subject": "self"}
+{"id": "q02", "text": "Можно ли Нурофен вместе с Конкором?", "query_types": ["drug_compatibility"], "subject": "self"}
+{"id": "q03", "text": "Сколько капель Називина можно ребёнку?", "query_types": ["dosing"], "subject": "ребёнок"}
+{"id": "q04", "text": "Есть аналог Нольпазы подешевле?", "query_types": ["analog"], "subject": "self"}
+{"id": "q05", "text": "Я кормлю грудью, можно ли мне Парацетамол?", "query_types": ["pregnancy_lactation"], "subject": "self"}
+{"id": "q06", "text": "Что я раньше пил от давления?", "query_types": ["therapy_history"], "subject": "self"}
+{"id": "q07", "text": "Что ты обо мне помнишь?", "query_types": ["profile_review"], "subject": "self"}
+{"id": "q08", "text": "До скольки вы работаете?", "query_types": ["general"], "subject": "self"}
+{"id": "q09", "text": "У дочки температура 38, что дать?", "query_types": ["symptom_relief"], "subject": "дочь"}
+{"id": "q10", "text": "Можно ли пить алкоголь с Амоксиклавом?", "query_types": ["drug_compatibility"], "subject": "self"}
+{"id": "q11", "text": "Как принимать Омез — до еды или после?", "query_types": ["dosing"], "subject": "self"}
+{"id": "q12", "text": "Чем заменить Супрастин, чтобы не клонило в сон?", "query_types": ["analog"], "subject": "self"}
+{"id": "q13", "text": "Маме можно Найз при её давлении?", "query_types": ["drug_compatibility"], "subject": "мама"}
+{"id": "q14", "text": "Беременным можно Но-шпу?", "query_types": ["pregnancy_lactation"], "subject": "self"}
+{"id": "q15", "text": "Посоветуйте что-нибудь от насморка и можно ли это при гипертонии?", "query_types": ["symptom_relief", "drug_compatibility"], "subject": "self"}
+{"id": "q16", "text": "Какие таблетки от аллергии мне подойдут?", "query_types": ["symptom_relief"], "subject": "self"}
+{"id": "q17", "text": "Сыну 10 лет, сколько Ибуклина ему давать?", "query_types": ["dosing"], "subject": "сын"}
+{"id": "q18", "text": "Что посоветуете от кашля ребёнку 3 лет?", "query_types": ["symptom_relief"], "subject": "ребёнок"}
+{"id": "q19", "text": "Сколько стоит доставка?", "query_types": ["general"], "subject": "self"}
+{"id": "q20", "text": "Мне нужно что-то от изжоги", "query_types": ["symptom_relief"], "subject": "self"}

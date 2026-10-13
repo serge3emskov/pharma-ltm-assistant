@@ -27,7 +27,16 @@ Polarity = Literal["positive", "negative"]
 
 
 class _Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    # Числа в текстовых полях («dosage»: 5) приводим к строке — это не меняет смысл
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, coerce_numbers_to_str=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _null_means_absent(cls, data: Any) -> Any:
+        """null и пустая строка от модели означают «поле не указано»: срабатывают значения по умолчанию."""
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if v is not None and not (isinstance(v, str) and not v.strip())}
+        return data
 
 
 # --------------------------------------------------------------------------- факты

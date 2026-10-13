@@ -1,0 +1,4 @@
+# Для запуска Qwen в Colab (torch уже установлен в среде)
+transformers>=4.51
+accelerate>=0.30
+bitsandbytes>=0.43

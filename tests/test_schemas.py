@@ -92,6 +92,25 @@ def test_special_state_synonyms_and_week_rule():
         SpecialStateEvent(section="special_states", name="беременность", pregnancy_week=60, evidence="x")
 
 
+def test_null_and_empty_fields_mean_absent():
+    facts, _, rej = parse_extraction({"facts": [
+        ev("medications", "Энап", subject=None, dosage="", status=None, polarity=None, frequency="  "),
+    ]})
+    assert not rej
+    f = facts[0]
+    assert (f.subject, f.polarity, f.status, f.dosage, f.frequency) == ("self", "positive", None, None, None)
+
+
+def test_numbers_in_text_fields_coerced():
+    facts, _, rej = parse_extraction({"facts": [ev("medications", "Энап", dosage=5)]})
+    assert not rej and facts[0].dosage == "5"
+
+
+def test_null_required_field_still_rejected():
+    _, _, rej = parse_extraction({"facts": [ev("medications", None)]})
+    assert rej and "name" in rej[0].errors[0]
+
+
 def test_query_classification_requires_type():
     with pytest.raises(ValidationError):
         QueryClassification(query_types=[])

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pharmaltm"
-version = "0.1.0"
+version = "0.2.0"
 description = "Долгосрочная память (LTM) аптечного AI-ассистента: LLM извлекает смысл, состоянием памяти управляет код"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pandas>=2"]
+llm = ["transformers>=4.51", "accelerate>=0.30", "bitsandbytes>=0.43"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -303,6 +303,16 @@ class MemoryStore:
             needs_clarification=bool(row["needs_clarification"]), updated_at=_dt(row["updated_at"]),
         )
 
+    def list_section_states(self, user_id: str) -> list[SectionState]:
+        rows = self.conn.execute(
+            "SELECT * FROM section_states WHERE user_id=? ORDER BY subject, section", (user_id,)
+        )
+        return [
+            SectionState(user_id=user_id, subject=r["subject"], section=Section(r["section"]), state=r["state"],
+                         needs_clarification=bool(r["needs_clarification"]), updated_at=_dt(r["updated_at"]))
+            for r in rows
+        ]
+
     def save_section_state(self, st: SectionState, now: datetime) -> None:
         if st.state is None and not st.needs_clarification:
             self.conn.execute(

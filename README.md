@@ -4,7 +4,10 @@
 
 Архитектура повторяет подход из статьи [«Долгосрочная память для медицинского AI-ассистента: почему мы не отдали управление памятью LLM»](https://habr.com/ru/articles/1090888/) и переносит его на аптечный домен.
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/serge3emskov/pharma-ltm-assistant/blob/main/notebooks/01_core_demo.ipynb)
+| Ноутбук | Что показывает | GPU |
+|---|---|---|
+| [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/serge3emskov/pharma-ltm-assistant/blob/main/notebooks/01_core_demo.ipynb) `01_core_demo` | детерминированное ядро на сквозном сценарии, LLM-шаги замоканы | не нужен |
+| [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/serge3emskov/pharma-ltm-assistant/blob/main/notebooks/02_llm_pipeline.ipynb) `02_llm_pipeline` | LLM-шаги на Qwen3-4B-Instruct-2507, проверка на dev-наборе, живой диалог | T4 |
 
 ## Принцип
 
@@ -20,7 +23,31 @@ read-path (синхронно)
                                                                               + список «уточнить у покупателя»
 ```
 
-На этапе 1 LLM-шаги замоканы готовым JSON. Ядро работает на CPU и покрыто тестами.
+## LLM-шаги
+
+Модель — [Qwen3-4B-Instruct-2507](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507), 4-bit NF4 в Colab T4, жадное декодирование.
+
+| Шаг | Что делает модель | Что делает код |
+|---|---|---|
+| Классификатор разделов | какие разделы затронуты в фрагменте диалога | отбрасывает неизвестные разделы; при сбое запускает extractor по всем разделам |
+| Extractor | события по **одному** разделу; в промпте правила и примеры только этого раздела | повтор при битом JSON, отсечение фактов чужого раздела, поэлементная валидация |
+| Классификатор запроса | тип запроса и о ком он | отбрасывает неизвестные типы; при сбое — правила |
+| Ответ | ответ покупателю | контекст с пометкой источника и списком «уточнить» |
+
+Write-path запускается после фрагмента диалога (`ChatSession.close()`), read-path — на каждое сообщение. Ответы модели, которые не удалось разобрать, пишутся в `rejections` вместе с сырым текстом.
+
+Бэкенды с одним интерфейсом: `QwenTransformersLLM` (Colab), `OpenAICompatLLM` (vLLM, Ollama, LM Studio), `CachedLLM` (кэш ответов на диск), `ScriptedLLM` (тесты).
+
+### Dev-набор
+
+`data/dev_dialogs.jsonl` — 16 диалогов: каждый раздел, отрицания, «не знаю», покупки для ребёнка и мамы, препарат только в вопросе, изменения уже сохранённых фактов. Для каждого — эталонный ответ extractor-а и ожидаемое итоговое состояние памяти. `data/dev_queries.jsonl` — 20 запросов с типами и субъектом.
+
+Сравнивается итоговое состояние памяти (ключ после нормализации и статус после state machine), а не дословный JSON. Тест прогоняет эталонные ответы через весь пайплайн и требует 100% совпадения: так проверяются сами эталоны.
+
+| Классификатор запроса | Точное совпадение типов | Субъект |
+|---|---|---|
+| Правила (baseline) | 85% | 100% |
+| Qwen3-4B | после прогона в Colab | |
 
 ## Разделы памяти
 
@@ -78,22 +105,44 @@ src/pharmaltm/
   memory.py          write-path: state machine
   retrieval.py       read-path: разделы, статусы, сроки, «уточнить», рендер контекста
   query_rules.py     baseline-классификатор запроса на правилах
-tests/               тесты по слоям: схемы, нормализация, переходы, выборка, E2E
+  llm.py             бэкенды моделей, кэш, устойчивый разбор JSON
+  prompts.py         промпты: классификатор разделов, extractor по разделу, классификатор запроса, ответ
+  pipeline.py        write-path, read-path, ассистент, сессия чата
+  devcheck.py        проверка на dev-наборе, эталонный бэкенд
+data/                dev-набор диалогов и запросов с эталонами
+tests/               тесты по слоям: схемы, нормализация, переходы, выборка, промпты, пайплайн, E2E
 notebooks/
-  01_core_demo.ipynb демонстрация на сквозном сценарии
+  01_core_demo.ipynb    ядро на сквозном сценарии
+  02_llm_pipeline.ipynb LLM-шаги на Qwen
 ```
 
 ## Запуск
 
-**Colab:** откройте ноутбук по кнопке выше и выполните все ячейки. GPU не нужен.
+**Colab:** откройте ноутбук по кнопке выше. Для `02_llm_pipeline` включите T4: Среда выполнения → Сменить среду выполнения.
 
-**Локально:**
+**Локально, тесты** (модель не нужна):
 
 ```bash
 git clone https://github.com/serge3emskov/pharma-ltm-assistant.git
 cd pharma-ltm-assistant
 pip install -r requirements.txt
 python -m pytest -q
+```
+
+**Локально с моделью через Ollama.** Скачайте GGUF-версию той же модели:
+
+```bash
+ollama pull hf.co/unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M
+```
+
+```python
+from pharmaltm import OpenAICompatLLM, PharmacyAssistant
+
+llm = OpenAICompatLLM("http://localhost:11434/v1", "hf.co/unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_K_M")
+bot = PharmacyAssistant(llm)
+session = bot.session("buyer-001")
+print(session.say("У меня аллергия на пенициллин. Что можно от горла?"))
+session.close()  # write-path: факты из диалога уходят в память
 ```
 
 ## Пример контекста для основной модели
@@ -115,7 +164,7 @@ python -m pytest -q
 ## План
 
 1. ✅ **Детерминированное ядро:** схемы, нормализация, state machine, read-path, тесты.
-2. **LLM-шаги на Qwen3-4B-Instruct (4-bit, Colab T4):** классификатор разделов, extractor с правилами выбранного раздела, классификатор запроса.
+2. ✅ **LLM-шаги на Qwen3-4B-Instruct (4-bit, Colab T4):** классификатор разделов, extractor с правилами выбранного раздела, классификатор запроса, ответ; dev-набор. Цифры на живой модели — после прогона ноутбука 02.
 3. **Оценка по слоям:** синтетические диалоги и golden set, точность и полнота по разделам и полям, доля отклонённых событий, корректность контекста, сравнение с baseline на правилах.
 4. **Справочник:** выгрузка ГРЛС вместо seed-словаря, детерминированная проверка противопоказаний и взаимодействий по таблице.
 
