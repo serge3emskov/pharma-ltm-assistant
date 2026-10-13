@@ -12,6 +12,7 @@ read-path:   сообщение → классификатор запроса (f
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -19,6 +20,7 @@ from typing import Any, Callable, Iterable
 
 from pydantic import ValidationError
 
+from .lexicon import fold
 from .llm import LLM, Messages, extract_json_object
 from .memory import MemoryWriter, WriteReport
 from .normalize import Normalizer
@@ -259,17 +261,30 @@ class WritePath:
         self.extractor = extractor or Extractor(llm)
         self.use_safety_net = safety_net
 
-    def safety_net(self, turns: Turns, sections: list[Section]) -> list[Section]:
-        """Разделы, которые классификатор пропустил, а код видит по справочнику.
+    # «таблеток не пью», «лекарства никакие не принимаю», «ничего другого не пью»
+    MEDS_ABSENT_RE = re.compile(
+        r"(лекарств|таблет|препарат|медикамент)\w*\s+(\w+\s+){0,2}не\s+(пью|принима)"
+        r"|не\s+(пью|принима)\w*\s+(\w+\s+){0,2}(лекарств|таблет|препарат|медикамент)"
+        r"|ничего\s+(другого\s+)?не\s+(пью|принима)"
+    )
 
-        Название препарата из справочника — точный сигнал, поэтому раздел medications
-        добавляется детерминированно. Решать, факт это или вопрос («можно ли мне Нурофен?»),
-        по-прежнему будет extractor: страховка повышает полноту маршрутизации ценой лишнего вызова.
+    def safety_net(self, turns: Turns, sections: list[Section]) -> list[Section]:
+        """Разделы, которые классификатор пропустил, а код видит по справочнику или по шаблону.
+
+        * препарат из справочника или «лекарств не пью» → medications;
+        * диагноз из справочника («простуда», «цистит») → reported_diagnoses.
+        Это точные сигналы, поэтому раздел добавляется детерминированно. Решать, факт это или вопрос
+        («можно ли мне Нурофен?»), по-прежнему будет extractor: страховка повышает полноту
+        маршрутизации ценой лишнего вызова, а лишние факты отсекают проверки согласованности.
         """
-        if Section.MEDICATIONS in sections:
-            return []
+        n = self.writer.normalizer
         text = "\n".join(t["content"] for t in turns)
-        return [Section.MEDICATIONS] if self.writer.normalizer.drug_mentions(text) else []
+        added: list[Section] = []
+        if Section.MEDICATIONS not in sections and (n.drug_mentions(text) or self.MEDS_ABSENT_RE.search(fold(text))):
+            added.append(Section.MEDICATIONS)
+        if Section.REPORTED_DIAGNOSES not in sections and n.diagnoses.find_mentions(text):
+            added.append(Section.REPORTED_DIAGNOSES)
+        return added
 
     def process(self, user_id: str, turns: Turns, dialog_id: str | None = None) -> WriteResult:
         # Модель видит реплики покупателя и только вопросы ассистента, без его длинных советов
@@ -286,7 +301,9 @@ class WritePath:
             sections = sections + added
         extraction, ecalls, stats = self.extractor(turns, sections) if sections else (
             {"facts": [], "section_statuses": []}, [], ExtractionStats())
-        report = self.writer.write(user_id, extraction, dialog_id)
+        # Цитаты evidence сверяются с тем, что видела модель
+        report = self.writer.write(user_id, extraction, dialog_id,
+                                   dialog_text="\n".join(t["content"] for t in turns))
         failed = [c for c in [ccall, *ecalls] if not c.ok]
         if failed:
             now = self.writer.clock()

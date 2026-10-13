@@ -208,7 +208,8 @@ def _render_fact(cf: ContextFact, kind: FactKind) -> str:
         details = f" ({f.data['details']})" if f.data.get("details") else ""
         return f"- {label}: {f.data.get('value')}{details} [на {confirmed}]{stale}"
     if f.status == "denied":
-        return f"- {f.key}: подтверждено отсутствие [на {confirmed}]{stale}"
+        # «НЕТ» заглавными: маленькая модель читала «беременность: подтверждено отсутствие» как беременность
+        return f"- {f.key}: НЕТ (подтверждено отсутствие) [на {confirmed}]{stale}"
     parts = [f"- {f.key} [{status_label(f.section, f.status)}]"]
     attrs = {k: v for k, v in f.data.items() if v not in (None, "")}
     if attrs:

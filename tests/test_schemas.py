@@ -114,3 +114,12 @@ def test_null_required_field_still_rejected():
 def test_query_classification_requires_type():
     with pytest.raises(ValidationError):
         QueryClassification(query_types=[])
+
+
+def test_negation_drops_invalid_status_but_affirmation_does_not():
+    facts, _, rej = parse_extraction({"facts": [
+        ev("chronic_conditions", "гастрит", polarity="negative", status="confirmed_absent"),
+        ev("medications", "Но-шпа", status="dont_know"),
+    ]})
+    assert [f.name for f in facts] == ["гастрит"] and facts[0].status is None
+    assert len(rej) == 1 and "status" in rej[0].errors[0]

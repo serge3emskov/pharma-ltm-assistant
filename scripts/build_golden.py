@@ -773,10 +773,18 @@ scenario("g-e2e-08", "multi_session", ["e2e", "family", "subject_isolation"], [
 ])
 
 scenario("g-e2e-09", "multi_session", ["e2e", "lifestyle"], [
-    session([U("Работаю таксистом, весь день за рулём.")],
-            [life("driving", "да", "весь день за рулём", details="таксист, весь день за рулём")],
-            expect=[F(LI, "self", "driving")]),
+    session([U("Я мужчина, 40 лет, таксист — весь день за рулём. Аллергий и хронических болезней нет, "
+               "лекарств не принимаю.")],
+            [dem("sex", "м", "Я мужчина"), dem("age", 40, "40 лет"),
+             life("driving", "да", "таксист — весь день за рулём", details="таксист, весь день за рулём")],
+            [st(AL, "confirmed_absent", "Аллергий и хронических болезней нет"),
+             st(CH, "confirmed_absent", "Аллергий и хронических болезней нет"),
+             st(M, "confirmed_absent", "лекарств не принимаю")],
+            expect=[F(DE, "self", "sex"), F(DE, "self", "age"), F(LI, "self", "driving")],
+            states=[S(AL, "self", "confirmed_absent"), S(CH, "self", "confirmed_absent"),
+                    S(M, "self", "confirmed_absent")]),
     probe("Посоветуйте что-нибудь от аллергии на пыльцу.", ["symptom_relief"], include=[(LI, "driving")],
+          no_clarify=[AL, M, CH, SP],
           checks=[mentions("сонлив|за рул|вожд|концентрац|внимани", "учтено вождение")], after_days=2),
 ])
 

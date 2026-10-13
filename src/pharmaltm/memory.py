@@ -6,15 +6,22 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable
 
+from rapidfuzz import fuzz
+
+from .lexicon import clean_name, evidence_coverage, fold
 from .normalize import Normalizer
 from .schemas import FACT_DATA_FIELDS, Rejection, SectionStatusEvent, parse_extraction
 from .sections import POLICIES, FactKind, Section, SectionPolicy
 from .store import Fact, MemoryStore, new_id
+
+
+CODE_RULE_PREFIX = "код: "  # так помечены события, отклонённые правилами кода, а не схемой
 
 
 class ChangeType(str, Enum):
@@ -103,11 +110,16 @@ class MemoryWriter:
         self.clock = clock or _utcnow
 
     # ------------------------------------------------------------------ вход
-    def write(self, user_id: str, extraction: str | dict, dialog_id: str | None = None) -> WriteReport:
-        """Принимает сырой ответ extractor-а, валидирует и применяет события."""
+    def write(self, user_id: str, extraction: str | dict, dialog_id: str | None = None,
+              dialog_text: str | None = None) -> WriteReport:
+        """Принимает сырой ответ extractor-а, валидирует, проверяет согласованность и применяет события.
+
+        dialog_text — то, что видела модель; если передан, цитата evidence каждого события
+        должна найтись в нём, иначе событие считается выдуманным.
+        """
         facts, statuses, rejections = parse_extraction(extraction)
-        facts, misplaced = self._reference_check(facts)
-        rejections += misplaced
+        facts, statuses, by_rules = self._consistency_check(facts, statuses, dialog_text)
+        rejections += by_rules
         now = self.clock()
         report = WriteReport(rejected=rejections)
         with self.store.transaction():
@@ -120,32 +132,135 @@ class MemoryWriter:
                 report.applied += self.apply_section_status(user_id, st, dialog_id, now)
         return report
 
-    # ------------------------------------------------------------------ проверка по справочнику
+    # ------------------------------------------------------------------ проверки согласованности
+    # Детерминированные правила поверх валидации схемы. Каждое — ответ на класс ошибок модели,
+    # найденный при оценке; модель их не видит и не может обойти.
     _NOT_DRUG_SECTIONS = (Section.CHRONIC_CONDITIONS, Section.REPORTED_DIAGNOSES, Section.SYMPTOMS)
+    _ALLERGY_WORDS = ("аллерг", "непереносим")
+    GENERIC_ALLERGENS = frozenset({
+        "лекарства", "лекарство", "лекарственные препараты", "препараты", "медикаменты", "таблетки",
+        "ничего", "ни на что", "что-либо", "что либо", "любые лекарства",
+    })
+    MIN_EVIDENCE_COVERAGE = 0.5
+    # Слово-маркер атрибута должно быть в цитате или в вопросе ассистента («Он курит?» — «Да, много»)
+    LIFESTYLE_MARKERS = {
+        "smoking": re.compile(r"кур[июяеё]|курен|сигарет|табак|вейп|кальян"),
+        "alcohol": re.compile(r"алког|спиртн|вин[оау]|пив[оау]|водк|коньяк|выпива|бокал|рюмк"),
+        "driving": re.compile(r"рул[ьяеюё]|вожу|водит|вожден|машин|автомоб|такси|автобус|шоф[её]р|дальнобой"),
+    }
 
-    def _reference_check(self, facts: list[Any]) -> tuple[list[Any], list[Rejection]]:
-        """Препарат в разделе болезней или симптомов — ошибка раздела, а не новый диагноз.
+    @staticmethod
+    def _reject(ev: Any, reason: str) -> Rejection:
+        raw = ev.model_dump() if hasattr(ev, "model_dump") else ev
+        return Rejection(kind="fact", raw=raw, errors=[f"{CODE_RULE_PREFIX}{reason}"])
 
-        Срабатывает только на точное совпадение со справочником препаратов, когда название
-        не найдено в справочнике самого раздела: «Варфарин» в диагнозах отклоняется,
-        «давление» в хронических — нет.
-        """
+    def _consistency_check(
+        self, facts: list[Any], statuses: list[SectionStatusEvent], dialog_text: str | None
+    ) -> tuple[list[Any], list[SectionStatusEvent], list[Rejection]]:
+        n = self.normalizer
         kept: list[Any] = []
+        statuses = list(statuses)
         rejected: list[Rejection] = []
+
+        if dialog_text:
+            grounded: list[Any] = []
+            for ev in facts:
+                if evidence_coverage(ev.evidence, dialog_text) < self.MIN_EVIDENCE_COVERAGE:
+                    rejected.append(self._reject(ev, f"цитата «{ev.evidence}» не найдена в диалоге"))
+                else:
+                    grounded.append(ev)
+            facts = grounded
+            ok_statuses = []
+            for st in statuses:
+                if evidence_coverage(st.evidence, dialog_text) < self.MIN_EVIDENCE_COVERAGE:
+                    rejected.append(self._reject(st, f"цитата «{st.evidence}» не найдена в диалоге"))
+                else:
+                    ok_statuses.append(st)
+            statuses = ok_statuses
+
+        assistant_text = fold(dialog_text or "")
+
+        # «Гастрита и язвы нет» пришло как «хронических болезней нет вообще»: если в цитате статуса
+        # раздела названы конкретные пункты справочника, это отрицание этих пунктов, а не всего раздела
+        positive_keys = {(n.subject(ev.subject), n.entity(Section(ev.section), ev.name).normalized)
+                         for ev in facts if getattr(ev, "name", None) and ev.polarity == "positive"}
+        converted_statuses = []
+        for st in statuses:
+            section = Section(st.section)
+            lexicon = n.lexicon_for(section)
+            mentions = lexicon.find_mentions(st.evidence) if (lexicon and st.status == "confirmed_absent") else []
+            mentions = [m for m in mentions if (n.subject(st.subject), m.normalized) not in positive_keys]
+            if not mentions:
+                converted_statuses.append(st)
+                continue
+            for m in mentions:
+                parsed, _, _ = parse_extraction({"facts": [{
+                    "section": st.section, "subject": st.subject, "name": m.normalized, "polarity": "negative",
+                    "evidence": st.evidence}]})
+                facts.extend(parsed)
+        statuses = converted_statuses
+
+        allergy_reactions = [fold(ev.reaction) for ev in facts
+                             if ev.section == "allergies" and getattr(ev, "reaction", None)]
+
+        # Препараты, о которых в этой же реплике говорится как об аллергене (есть аллергия или её нет)
+        allergy_keys = {
+            (n.subject(ev.subject), n.entity(Section.ALLERGIES, ev.name).normalized)
+            for ev in facts if ev.section == "allergies"
+        }
         for ev in facts:
             section = Section(ev.section)
+            name = getattr(ev, "name", None)
+            folded = fold(name) if name else ""
+
+            # «Аллергии на лекарства нет» — это статус раздела, а не аллерген «лекарства»
+            if (section == Section.ALLERGIES and ev.polarity == "negative"
+                    and (folded.strip(" .") in self.GENERIC_ALLERGENS or clean_name(name) in self.GENERIC_ALLERGENS)):
+                statuses.append(SectionStatusEvent(section="allergies", subject=ev.subject,
+                                                   status="confirmed_absent", evidence=ev.evidence))
+                continue
+
             if section in self._NOT_DRUG_SECTIONS:
-                own = self.normalizer.entity(section, ev.name)
-                drug = self.normalizer.drugs.lookup(ev.name)
+                if folded.startswith(self._ALLERGY_WORDS):
+                    rejected.append(self._reject(ev, f"«{name}» — аллергия, она относится к разделу allergies"))
+                    continue
+                own = n.entity(section, name)
+                drug = n.drugs.lookup(name)
                 if own.method not in ("exact", "prefix") and drug.method in ("exact", "prefix"):
-                    rejected.append(Rejection(
-                        kind="fact", raw=ev.model_dump(),
-                        errors=[f"«{ev.name}» есть в справочнике препаратов ({drug.normalized}) — "
-                                f"не относится к разделу {section.value}"],
-                    ))
+                    rejected.append(self._reject(
+                        ev, f"«{name}» есть в справочнике препаратов ({drug.normalized}) — "
+                            f"не относится к разделу {section.value}"))
+                    continue
+                if section == Section.SYMPTOMS and own.method not in ("exact", "prefix"):
+                    diag = n.diagnoses.lookup(name)
+                    if diag.method in ("exact", "prefix"):
+                        rejected.append(self._reject(
+                            ev, f"«{name}» — диагноз ({diag.normalized}), а не симптом"))
+                        continue
+
+            # Атрибут образа жизни без слова-маркера: «Лозап бросил» не значит «бросил курить»
+            if section == Section.LIFESTYLE:
+                marker = self.LIFESTYLE_MARKERS[ev.attribute]
+                if not marker.search(fold(ev.evidence)) and not marker.search(assistant_text):
+                    rejected.append(self._reject(ev, f"в цитате «{ev.evidence}» нет ничего про {ev.attribute}"))
+                    continue
+
+            # Реакция из аллергии — не текущая жалоба: «Ибупрофен плохо переношу — болит желудок»
+            if (section == Section.SYMPTOMS and ev.polarity == "positive"
+                    and any(fuzz.token_set_ratio(folded, r) >= 80 for r in allergy_reactions)):
+                rejected.append(self._reject(ev, f"«{name}» — реакция на препарат из аллергии, а не текущая жалоба"))
+                continue
+
+            # «Аллергия на Амоксиклав» — не сведение о том, что человек его не принимает или бросил.
+            # Активный приём не трогаем: это прямое утверждение, а не вывод из аллергии.
+            if section == Section.MEDICATIONS and (ev.polarity == "negative" or ev.status == "stopped"):
+                key = (n.subject(ev.subject), n.entity(Section.MEDICATIONS, name).normalized)
+                if key in allergy_keys:
+                    rejected.append(self._reject(
+                        ev, f"«не принимает {name}» выведено из аллергии, а не сказано покупателем"))
                     continue
             kept.append(ev)
-        return kept, rejected
+        return kept, statuses, rejected
 
     # ------------------------------------------------------------------ факты
     def apply_fact(self, user_id: str, ev: Any, dialog_id: str | None, now: datetime) -> list[AppliedChange]:
@@ -160,6 +275,11 @@ class MemoryWriter:
             nr = self.normalizer.entity(section, ev.name)
             key, raw_name, norm, polarity = nr.normalized, ev.name, nr.as_dict(), ev.polarity
             explicit_status = getattr(ev, "status", None)
+            if (polarity == "negative" and explicit_status in policy.statuses
+                    and explicit_status not in policy.active_statuses and explicit_status != "denied"):
+                # «Изжога прошла» с polarity=negative и status=resolved: явный неактуальный статус
+                # точнее отрицания — было, а теперь нет (а не «никогда не было»)
+                polarity = "positive"
             if section == Section.MEDICATIONS and "dosage" not in incoming and nr.dosage:
                 incoming["dosage"] = nr.dosage  # дозировку из «Энап 5 мг» достаёт код, а не LLM
 

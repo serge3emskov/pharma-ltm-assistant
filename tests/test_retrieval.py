@@ -39,7 +39,7 @@ def test_statuses_rules():
 def test_denied_allergy_rendered_as_confirmed_absence(writer, builder):
     write(writer, ev("allergies", "пенициллин", polarity="negative"))
     text = builder.build("u-test", [Q.ANALOG]).render()
-    assert "пенициллины: подтверждено отсутствие" in text
+    assert "пенициллины: НЕТ (подтверждено отсутствие)" in text
 
 
 # ---------------------------------------------------------------- забывание по типу факта

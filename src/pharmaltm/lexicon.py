@@ -24,10 +24,29 @@ FORM_WORDS = frozenset(
 )
 _NON_WORD = re.compile(r"[^a-zа-я0-9+ ]+")
 _SPACES = re.compile(r"\s+")
+_TOKEN = re.compile(r"[a-zа-я0-9]+")
 
 
 def fold(text: str) -> str:
     return text.lower().replace("ё", "е").strip()
+
+
+def evidence_coverage(evidence: str, text: str, min_token_len: int = 3, token_match: float = 85.0) -> float:
+    """Доля слов цитаты, найденных в тексте диалога (с допуском на словоформу).
+
+    Сравнение по словам, а не подстрокой: модель может сократить цитату
+    («пьёт Диротон» из «пьёт Сиофор и Диротон») — это не выдумка. А «не кормлю»
+    в диалоге, где о кормлении нет ни слова, — выдумка.
+    """
+    words = [w for w in _TOKEN.findall(fold(evidence)) if len(w) >= min_token_len]
+    if not words:
+        return 1.0
+    vocab = set(_TOKEN.findall(fold(text)))
+    found = 0
+    for w in words:
+        if w in vocab or any(abs(len(v) - len(w)) <= 3 and fuzz.ratio(w, v) >= token_match for v in vocab):
+            found += 1
+    return found / len(words)
 
 
 def parse_dosage(text: str) -> str | None:

@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import re
 from enum import Enum
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import (
     BaseModel,
@@ -42,11 +42,30 @@ class _Strict(BaseModel):
 # --------------------------------------------------------------------------- факты
 
 
+def _literal_values(annotation: Any) -> set:
+    values: set = set()
+    for arg in get_args(annotation) or (annotation,):
+        if get_origin(arg) is Literal:
+            values |= set(get_args(arg))
+    return values
+
+
 class _EntityEvent(_Strict):
     subject: ShortText = "self"   # для кого: сам покупатель, ребёнок, мама...
     name: ShortText               # как сказал пользователь, без нормализации
     polarity: Polarity = "positive"
     evidence: Evidence            # фрагмент реплики, из которого извлечён факт
+
+    @model_validator(mode="before")
+    @classmethod
+    def _negation_drops_bad_status(cls, data: Any) -> Any:
+        """«Гастрита нет» со статусом "confirmed_absent": смысл несёт отрицание, лишний статус отбрасываем.
+        Для утверждения недопустимый статус по-прежнему ошибка — там он меняет смысл."""
+        if isinstance(data, dict) and data.get("polarity") == "negative" and "status" in cls.model_fields:
+            if data.get("status") is not None and data["status"] not in _literal_values(
+                    cls.model_fields["status"].annotation):
+                data = {k: v for k, v in data.items() if k != "status"}
+        return data
 
 
 class MedicationEvent(_EntityEvent):

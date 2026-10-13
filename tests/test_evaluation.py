@@ -111,14 +111,22 @@ def test_validation_rejection():
     assert s["extractor"]["validation_repairs"] == 1 and s["extractor"]["rejected_validation"] == 1
 
 
-def test_extra_fact_and_grounding():
+def test_invented_evidence_is_rejected_by_code_before_memory():
     trap = bg.session([bg.U("Можно ли Терафлю при простуде?")], expect=[])
     run, errs = errors_of(mini({"t": [trap]}), {("Терафлю", "extract", "medications"): {"facts": [
         {"section": "medications", "name": "Терафлю", "evidence": "выдуманная цитата"}]}})
-    assert errs == {ERR_EXTRA}
+    assert errs == set()  # в память не попало
     s = summarize(run)
-    assert s["extractor"]["events"]["precision"] == 0.0 and s["extractor"]["evidence_grounded"] == 0.0
-    assert s["classifier"]["safety_net_added"] == 1  # страховка открыла раздел, extractor «ошибся»
+    assert s["extractor"]["events"]["precision"] == 0.0 and s["extractor"]["evidence_grounded"] == 0.0  # модель ошиблась
+    assert s["extractor"]["rules"] == {"цитата не найдена в диалоге": 1}
+    assert s["classifier"]["safety_net_added"] >= 1  # страховка открыла раздел по названию препарата
+
+
+def test_extra_fact_from_question_reaches_memory():
+    trap = bg.session([bg.U("Можно ли Терафлю при простуде?")], expect=[])
+    run, errs = errors_of(mini({"t": [trap]}), {("Терафлю", "extract", "medications"): {"facts": [
+        {"section": "medications", "name": "Терафлю", "evidence": "Можно ли Терафлю при простуде"}]}})
+    assert errs == {ERR_EXTRA}
 
 
 def test_missing_section_state():
@@ -218,3 +226,13 @@ def test_warm_cache_batches_validation_repairs(tmp_path):
     misses = llm.misses
     run = run_golden(llm, g, run_answers=False)
     assert llm.misses == misses and summarize(run)["extractor"]["validation_repaired"] == 1
+
+
+def test_missed_fact_next_to_correct_other_subject_is_not_subject_error():
+    """«Я не курю, а муж курит» → модель извлекла только мужа: это пропуск, а не ошибка субъекта."""
+    txt = "Я не курю, а муж курит."
+    sess = bg.session([bg.U(txt)], [bg.life("smoking", "нет", "Я не курю"), bg.life("smoking", "да", "а муж курит", subj="муж")],
+                      expect=[bg.F("lifestyle", "self", "smoking"), bg.F("lifestyle", "муж", "smoking")])
+    run, errs = errors_of(mini({"s": [sess]}), {(txt, "extract", "lifestyle"): {"facts": [
+        {"section": "lifestyle", "subject": "муж", "attribute": "smoking", "value": "да", "evidence": "муж курит"}]}})
+    assert errs == {ERR_MISSED}

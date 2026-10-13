@@ -356,3 +356,32 @@ def test_answer_prompt_forbids_doses():
     from pharmaltm.prompts import answer_messages
     system = answer_messages("ctx", [], "Сколько пить парацетамола?")[0]["content"]
     assert "Не называй дозы" in system
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Сахарный диабет 2 типа, на диете, таблеток не пью.", ["medications"]),
+    ("Беременна, лекарства никакие не пью.", ["medications"]),
+    ("Ничего другого не пью.", ["medications"]),
+    ("Никаких лекарств постоянно не принимаю.", ["medications"]),
+    ("Думаю, у меня обычная простуда.", ["reported_diagnoses"]),
+    ("Алкоголь не пью вообще.", []),
+    ("Болит горло.", []),
+])
+def test_safety_net_patterns(text, expected):
+    wp = WritePath(ScriptedLLM(lambda m, meta: "{}"), MemoryWriter(MemoryStore()))
+    assert [s.value for s in wp.safety_net([{"role": "user", "content": text}], [])] == expected
+
+
+def test_write_path_checks_evidence_against_dialog():
+    turns = [{"role": "user", "content": "Беременна, 20 недель."}]
+
+    def respond(m, meta):
+        if meta["task"] == "classify_sections":
+            return j({"sections": ["special_states"]})
+        return j({"facts": [
+            {"section": "special_states", "name": "беременность", "pregnancy_week": 20, "evidence": "Беременна, 20 недель"},
+            {"section": "special_states", "name": "лактация", "polarity": "negative", "evidence": "не кормлю"}]})
+
+    store = MemoryStore()
+    res = WritePath(ScriptedLLM(respond), MemoryWriter(store)).process("u", turns, "d")
+    assert [f.key for f in store.list_facts("u")] == ["беременность"] and len(res.report.rejected) == 1

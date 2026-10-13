@@ -29,7 +29,7 @@ from rapidfuzz import fuzz
 from .devcheck import GoldLLM, QueryResult, _prf, run_query_dev, summarize_queries
 from .lexicon import fold
 from .llm import chat_many, extract_json_object
-from .memory import MemoryWriter
+from .memory import CODE_RULE_PREFIX, MemoryWriter
 from .normalize import Normalizer
 from .pipeline import (
     VALIDATION_REPAIR_PROMPT,
@@ -57,7 +57,6 @@ USER = "golden-user"
 START = datetime(2026, 10, 1, 10, 0, tzinfo=timezone.utc)
 ENTITY_TEXT_FIELDS = ("dosage", "frequency", "indication", "reaction", "duration", "details")
 ENUM_FIELDS = ("polarity", "status", "reaction_type", "severity", "diagnosed_by")
-REFERENCE_MARK = "справочнике препаратов"
 TEXT_MATCH = 70      # token_set_ratio для свободного текста в полях
 GROUNDING_MATCH = 90  # partial_ratio: цитата evidence найдена в диалоге
 
@@ -410,6 +409,20 @@ def run_golden(
 # =========================================================================== метрики
 
 
+def _rule_kind(error: str) -> str:
+    text = error.removeprefix(CODE_RULE_PREFIX)
+    for marker, kind in (("не найдена в диалоге", "цитата не найдена в диалоге"),
+                         ("справочнике препаратов", "препарат не в своём разделе"),
+                         ("аллергия, она относится", "аллергия не в своём разделе"),
+                         ("а не симптом", "диагноз в симптомах"),
+                         ("выведено из аллергии", "«не принимает» из аллергии"),
+                         ("нет ничего про", "образ жизни без маркера в цитате"),
+                         ("реакция на препарат из аллергии", "реакция из аллергии в симптомах")):
+        if marker in text:
+            return kind
+    return "другое"
+
+
 def _field_equal(fld: str, gold: Any, pred: Any) -> bool:
     if pred is None:
         return False
@@ -507,8 +520,9 @@ def attribute_errors(run: ScenarioRun) -> list[dict]:
         section, subj, key = key3
         if Section(section) not in sess.write.sections:
             cat = ERR_CLASSIFIER
-        elif any(k[0] == section and k[2] == key and k[1] != subj for k in sess.pred_events):
-            cat = ERR_SUBJECT
+        elif any(k[0] == section and k[2] == key and k[1] != subj and k not in sess.gold_events
+                 for k in sess.pred_events):
+            cat = ERR_SUBJECT  # тот же факт приписан другому человеку (а не верно извлечён для другого)
         elif key3 in sess.rejected_keys:
             cat = ERR_VALIDATION
         elif any(k[0] == section and k[1] == subj and k not in sess.gold_events for k in sess.pred_events):
@@ -525,7 +539,7 @@ def attribute_errors(run: ScenarioRun) -> list[dict]:
         section, subj, key = key3
         if (section, subj) in naming_pairs:
             continue  # пара к «название не нормализовано»
-        if any(m[0] == section and m[2] == key for m in missing):
+        if any(m[0] == section and m[2] == key and m[1] != subj for m in missing) and key3 not in exp3:
             continue  # пара к «неверный субъект»
         src = next((s for s in run.sessions if key3 in s.pred_events), None)
         err("fact", "extra", item, ERR_EXTRA, src)
@@ -579,7 +593,8 @@ def summarize(run: EvalRun) -> dict[str, Any]:
     field_counts: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     extra_attrs = 0
     grounded = pred_total = 0
-    json_failures = repairs = repaired = rejected_validation = rejected_reference = off_section = 0
+    json_failures = repairs = repaired = rejected_validation = rejected_by_rules = off_section = 0
+    rule_reasons: Counter = Counter()
     calls = 0
     for s in sessions:
         g, p = set(s.gold_events), set(s.pred_events)
@@ -603,8 +618,9 @@ def summarize(run: EvalRun) -> dict[str, Any]:
         off_section += s.write.stats.off_section
         calls += len(s.write.calls)
         for r in s.write.report.rejected:
-            if any(REFERENCE_MARK in e for e in r.errors):
-                rejected_reference += 1
+            if any(e.startswith(CODE_RULE_PREFIX) for e in r.errors):
+                rejected_by_rules += 1
+                rule_reasons[_rule_kind(r.errors[0])] += 1
             else:
                 rejected_validation += 1
     fields_total = sum(v[1] for v in field_counts.values())
@@ -677,7 +693,8 @@ def summarize(run: EvalRun) -> dict[str, Any]:
             "validation_repairs": repairs,
             "validation_repaired": repaired,
             "rejected_validation": rejected_validation,
-            "rejected_reference": rejected_reference,
+            "rejected_by_rules": rejected_by_rules,
+            "rules": dict(rule_reasons.most_common()),
             "off_section_dropped": off_section,
         },
         "memory": {

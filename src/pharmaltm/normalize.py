@@ -6,6 +6,8 @@ LLM передаёт название так, как сказал пользов
 """
 from __future__ import annotations
 
+import re
+
 from . import reference_data as ref
 from .lexicon import Lexicon, NormResult, clean_name, fold, parse_dosage
 from .sections import Section
@@ -52,10 +54,17 @@ class Normalizer:
         """Препараты из справочника, упомянутые в тексте: для блока СПРАВОЧНИК в контексте ответа."""
         return self.drugs.find_mentions(text)
 
+    _CHILD_RE = re.compile(r"малыш|младен|грудничок|новорожд|годовал|ребен|ребят|детк")
+
     def subject(self, raw: str | None) -> str:
         if not raw:
             return "self"
         key = fold(raw)
         if key in self._subjects:
             return self._subjects[key]
-        return self._subjects.get(clean_name(raw), key)
+        cleaned = clean_name(raw)
+        if cleaned in self._subjects:
+            return self._subjects[cleaned]
+        if self._CHILD_RE.search(key):  # «годовалый малыш», «наш младенец»
+            return "ребёнок"
+        return cleaned or key

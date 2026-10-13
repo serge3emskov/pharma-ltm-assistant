@@ -182,3 +182,118 @@ def test_drug_in_diagnoses_is_rejected_by_reference(writer, store):
 def test_reference_check_keeps_legitimate_names(writer, store, section, name):
     r = write(writer, ev(section, name))
     assert not r.rejected and len(store.list_facts(USER)) == 1
+
+
+# ---------------------------------------------------------------- защиты по ошибкам golden-прогона 1
+
+
+def test_explicit_inactive_status_beats_negative_polarity(writer, store):
+    write(writer, ev("symptoms", "изжога", polarity="negative", status="resolved"))
+    assert store.get_fact(USER, "self", Section.SYMPTOMS, "изжога").status == "resolved"  # прошло, а не «не было»
+    write(writer, ev("medications", "Энап", polarity="negative", status="stopped"))
+    assert store.get_fact(USER, "self", Section.MEDICATIONS, "эналаприл").status == "stopped"
+
+
+def test_plain_negation_still_denied(writer, store):
+    write(writer, ev("symptoms", "кашель", polarity="negative"))
+    assert store.get_fact(USER, "self", Section.SYMPTOMS, "кашель").status == "denied"
+
+
+def test_negation_with_invalid_status_survives(writer, store):
+    r = write(writer, ev("chronic_conditions", "гастрит", polarity="negative", status="confirmed_absent"))
+    assert not r.rejected and store.get_fact(USER, "self", Section.CHRONIC_CONDITIONS, "гастрит").status == "denied"
+
+
+def test_allergy_does_not_imply_not_taking(writer, store):
+    r = write(writer, ev("allergies", "Амоксиклав", reaction="отёк"), ev("medications", "Амоксиклав", polarity="negative"))
+    assert [f.section for f in store.list_facts(USER)] == [Section.ALLERGIES]
+    assert "выведено из аллергии" in r.rejected[0].errors[0] and r.rejected[0].errors[0].startswith("код: ")
+
+
+def test_med_negation_without_allergy_is_kept(writer, store):
+    write(writer, ev("allergies", "пенициллин"), ev("medications", "Аспирин", polarity="negative"))
+    assert store.get_fact(USER, "self", Section.MEDICATIONS, "ацетилсалициловая кислота").status == "denied"
+
+
+@pytest.mark.parametrize("name", ["лекарства", "Лекарства.", "ни на что", "препараты"])
+def test_generic_allergen_negation_becomes_section_status(writer, store, name):
+    write(writer, ev("allergies", name, polarity="negative", evidence="Нет."))
+    assert store.list_facts(USER) == []
+    assert store.get_section_state(USER, "self", Section.ALLERGIES).state == "confirmed_absent"
+
+
+@pytest.mark.parametrize("section,name,reason", [
+    ("chronic_conditions", "аллергия на пенициллин", "аллергия"),
+    ("symptoms", "аллергия", "аллергия"),
+    ("symptoms", "простуда", "диагноз"),
+])
+def test_wrong_section_names_rejected(writer, store, section, name, reason):
+    r = write(writer, ev(section, name))
+    assert store.list_facts(USER) == [] and reason in r.rejected[0].errors[0]
+
+
+def test_symptom_from_symptom_lexicon_not_treated_as_diagnosis(writer, store):
+    write(writer, ev("symptoms", "температура"))
+    assert len(store.list_facts(USER)) == 1
+
+
+def test_evidence_must_be_found_in_dialog(writer, store):
+    extraction = {"facts": [
+        ev("special_states", "лактация", polarity="negative", evidence="не кормлю"),
+        ev("medications", "Диротон", evidence="пьёт Диротон"),  # сокращённая, но настоящая цитата
+    ]}
+    r = writer.write(USER, extraction, "d", dialog_text="У папы давление, пьёт Сиофор и Диротон.")
+    assert [f.key for f in store.list_facts(USER)] == ["лизиноприл"]
+    assert "не найдена в диалоге" in r.rejected[0].errors[0]
+
+
+def test_no_evidence_check_without_dialog(writer, store):
+    write(writer, ev("medications", "Энап", evidence="что угодно"))
+    assert len(store.list_facts(USER)) == 1
+
+
+def test_stopped_med_derived_from_allergy_statement_is_dropped(writer, store):
+    write(writer, ev("allergies", "Флемоксин", reaction="сыпь"), ev("medications", "Флемоксин", status="stopped"))
+    write(writer, ev("allergies", "аспирин", polarity="negative"), ev("medications", "аспирин", polarity="negative"))
+    assert {f.section for f in store.list_facts(USER)} == {Section.ALLERGIES}
+
+
+def test_active_med_next_to_allergy_is_kept(writer, store):
+    write(writer, ev("allergies", "пенициллин"), ev("medications", "Эриус", status="active"))
+    assert store.get_fact(USER, "self", Section.MEDICATIONS, "дезлоратадин") is not None
+
+
+def test_section_absence_naming_items_becomes_item_denials(writer, store):
+    write(writer, statuses=[absent("chronic_conditions", evidence="Гастрита и язвы у меня нет")])
+    got = {(f.key, f.status) for f in store.list_facts(USER)}
+    assert got == {("гастрит", "denied"), ("язвенная болезнь желудка", "denied")}
+    assert store.get_section_state(USER, "self", Section.CHRONIC_CONDITIONS).state is None  # про остальное не сказано
+
+
+def test_plain_section_absence_unchanged(writer, store):
+    write(writer, statuses=[absent("chronic_conditions", evidence="Хронических болезней нет")])
+    assert store.get_section_state(USER, "self", Section.CHRONIC_CONDITIONS).state == "confirmed_absent"
+
+
+def test_absence_item_also_stated_positive_is_not_denied(writer, store):
+    write(writer, ev("chronic_conditions", "давление"),
+          statuses=[absent("chronic_conditions", evidence="Хронических нет, только давление иногда")])
+    assert store.get_fact(USER, "self", Section.CHRONIC_CONDITIONS, "артериальная гипертензия").status == "active"
+
+
+@pytest.mark.parametrize("dialog,evidence,kept", [
+    ("Лозап бросил месяц назад, сам.", "Лозап бросил месяц назад, сам.", False),
+    ("Я не курю.", "Я не курю", True),
+    ("Ассистент: Он курит? Покупатель: Да, много.", "Да, много.", True),
+])
+def test_lifestyle_needs_marker(writer, store, dialog, evidence, kept):
+    writer.write(USER, {"facts": [ev("lifestyle", attribute="smoking", value="нет", evidence=evidence)]}, "d",
+                 dialog_text=dialog)
+    assert (len(store.list_facts(USER)) == 1) == kept
+
+
+def test_allergy_reaction_is_not_current_symptom(writer, store):
+    r = write(writer, ev("allergies", "Ибупрофен", reaction_type="intolerance", reaction="болит желудок"),
+              ev("symptoms", "болит желудок"))
+    assert [f.section for f in store.list_facts(USER)] == [Section.ALLERGIES]
+    assert "реакция на препарат" in r.rejected[0].errors[0]

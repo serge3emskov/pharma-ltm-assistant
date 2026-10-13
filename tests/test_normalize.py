@@ -88,3 +88,21 @@ def test_subjects(normalizer, raw, expected):
 ])
 def test_drug_mentions(normalizer, text, expected):
     assert [m.normalized for m in normalizer.drug_mentions(text)] == expected
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("себя", "self"), ("У меня", "self"), ("годовалый малыш", "ребёнок"), ("наш младенец", "ребёнок"),
+])
+def test_more_subjects(normalizer, raw, expected):
+    assert normalizer.subject(raw) == expected
+
+
+@pytest.mark.parametrize("evidence,text,expected", [
+    ("пьёт Диротон", "У папы давление, пьёт Сиофор и Диротон", 1.0),
+    ("не кормлю", "Беременна, 20 недель, лекарства не пью", 0.0),
+    ("Нет.", "Ассистент: Аллергия есть? Покупатель: Нет.", 1.0),
+    ("вместо Энапа", "С прошлой недели вместо Энапа пью Лозап", 1.0),
+])
+def test_evidence_coverage(evidence, text, expected):
+    from pharmaltm.lexicon import evidence_coverage
+    assert evidence_coverage(evidence, text) == expected
