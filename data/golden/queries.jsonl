@@ -1,0 +1,40 @@
+{"id": "gq01", "text": "Что принять от боли в животе?", "query_types": ["symptom_relief"], "subject": "self"}
+{"id": "gq02", "text": "Голова раскалывается, что выпить?", "query_types": ["symptom_relief"], "subject": "self"}
+{"id": "gq03", "text": "Можно ли совмещать Эналаприл и Ибупрофен?", "query_types": ["drug_compatibility"], "subject": "self"}
+{"id": "gq04", "text": "Совместим ли Варфарин с Аспирином?", "query_types": ["drug_compatibility"], "subject": "self"}
+{"id": "gq05", "text": "Можно ли выпить вина, если я пью Метронидазол?", "query_types": ["drug_compatibility"], "subject": "self"}
+{"id": "gq06", "text": "Как правильно пить Смекту?", "query_types": ["dosing"], "subject": "self"}
+{"id": "gq07", "text": "Сколько раз в день капать Називин?", "query_types": ["dosing"], "subject": "self"}
+{"id": "gq08", "text": "Какая дозировка Парацетамола для ребёнка 5 лет?", "query_types": ["dosing"], "subject": "ребёнок"}
+{"id": "gq09", "text": "Есть что-то дешевле Нурофена?", "query_types": ["analog"], "subject": "self"}
+{"id": "gq10", "text": "Чем можно заменить Эриус?", "query_types": ["analog"], "subject": "self"}
+{"id": "gq11", "text": "Посоветуйте аналог Ксарелто подешевле", "query_types": ["analog"], "subject": "self"}
+{"id": "gq12", "text": "Можно ли Цетрин при грудном вскармливании?", "query_types": ["pregnancy_lactation"], "subject": "self"}
+{"id": "gq13", "text": "Я беременна, что можно от изжоги?", "query_types": ["pregnancy_lactation", "symptom_relief"], "subject": "self"}
+{"id": "gq14", "text": "Жена беременна, ей можно Парацетамол?", "query_types": ["pregnancy_lactation"], "subject": "жена"}
+{"id": "gq15", "text": "Какие таблетки я брал в прошлый раз?", "query_types": ["therapy_history"], "subject": "self"}
+{"id": "gq16", "text": "Напомни, что мне назначали от давления раньше", "query_types": ["therapy_history"], "subject": "self"}
+{"id": "gq17", "text": "Что у тебя записано про мою аллергию?", "query_types": ["profile_review"], "subject": "self"}
+{"id": "gq18", "text": "Покажи, что ты обо мне знаешь", "query_types": ["profile_review"], "subject": "self"}
+{"id": "gq19", "text": "У вас есть Кагоцел в наличии?", "query_types": ["general"], "subject": "self"}
+{"id": "gq20", "text": "Вы работаете в воскресенье?", "query_types": ["general"], "subject": "self"}
+{"id": "gq21", "text": "Можно оплатить картой при доставке?", "query_types": ["general"], "subject": "self"}
+{"id": "gq22", "text": "Здравствуйте! Я кормлю грудью и пью Эутирокс.", "query_types": ["general"], "subject": "self"}
+{"id": "gq23", "text": "Чем маме сбить жар под 39?", "query_types": ["symptom_relief"], "subject": "мама"}
+{"id": "gq24", "text": "Чем лечить насморк у ребёнка?", "query_types": ["symptom_relief"], "subject": "ребёнок"}
+{"id": "gq25", "text": "Сын поцарапался, чем обработать?", "query_types": ["symptom_relief"], "subject": "сын"}
+{"id": "gq26", "text": "Папе можно Кеторол при язве?", "query_types": ["drug_compatibility"], "subject": "папа"}
+{"id": "gq27", "text": "Можно ли Супрастин и Тавегил вместе?", "query_types": ["drug_compatibility"], "subject": "self"}
+{"id": "gq28", "text": "Сколько дней можно пить Амоксиклав?", "query_types": ["dosing"], "subject": "self"}
+{"id": "gq29", "text": "Как давать Смекту годовалому малышу?", "query_types": ["dosing"], "subject": "ребёнок"}
+{"id": "gq30", "text": "Есть ли замена Конкору без рецепта?", "query_types": ["analog"], "subject": "self"}
+{"id": "gq31", "text": "Можно ли Но-шпу при кормлении?", "query_types": ["pregnancy_lactation"], "subject": "self"}
+{"id": "gq32", "text": "Что мне раньше помогало от изжоги?", "query_types": ["therapy_history"], "subject": "self"}
+{"id": "gq33", "text": "Что посоветуете от бессонницы?", "query_types": ["symptom_relief"], "subject": "self"}
+{"id": "gq34", "text": "Нужно что-то от укачивания для дочки в дорогу", "query_types": ["symptom_relief"], "subject": "дочь"}
+{"id": "gq35", "text": "Можно ли пить Найз и Кардиомагнил одновременно?", "query_types": ["drug_compatibility"], "subject": "self"}
+{"id": "gq36", "text": "Какой аналог у Омеза?", "query_types": ["analog"], "subject": "self"}
+{"id": "gq37", "text": "Есть ли у вас тесты на беременность?", "query_types": ["general"], "subject": "self"}
+{"id": "gq38", "text": "Мне при диабете можно сироп от кашля с сахаром?", "query_types": ["drug_compatibility"], "subject": "self"}
+{"id": "gq39", "text": "Бабушке плохо, давление поднялось до 180, что дать?", "query_types": ["symptom_relief"], "subject": "бабушка"}
+{"id": "gq40", "text": "Сколько таблеток Нурофена можно выпить за сутки?", "query_types": ["dosing"], "subject": "self"}

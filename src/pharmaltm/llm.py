@@ -97,23 +97,73 @@ class QwenTransformersLLM:
         self.model = AutoModelForCausalLM.from_pretrained(model_id, **kwargs)
         self.model.eval()
 
-    def chat(self, messages: Messages, *, max_new_tokens: int = 512, json_mode: bool = False,
-             meta: dict[str, Any] | None = None) -> str:
-        # enable_thinking=False отключает режим рассуждений у гибридных Qwen3; Instruct-2507 его просто игнорирует
-        prompt = self.tokenizer.apply_chat_template(
+    def prompt(self, messages: Messages) -> str:
+        # enable_thinking=False отключает режим рассуждений у гибридных Qwen3 (Qwen3-8B); Instruct-2507 его игнорирует
+        return self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
         )
-        inputs = self.tokenizer([prompt], return_tensors="pt").to(self.model.device)
+
+    def _generate(self, prompts: list[str], max_new_tokens: int) -> list[str]:
+        """Жадная генерация для списка промптов. Для пакета нужен left padding: у всех строк ответ
+        начинается с одной позиции, и новые токены срезаются по длине входа."""
+        tok = self.tokenizer
+        prev_side = tok.padding_side
+        tok.padding_side = "left"
+        try:
+            inputs = tok(prompts, return_tensors="pt", padding=True).to(self.model.device)
+        finally:
+            tok.padding_side = prev_side
+        pad_id = tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
         with self.torch.inference_mode():
             out = self.model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,  # извлечение должно быть воспроизводимым
                 temperature=None, top_p=None, top_k=None,
-                pad_token_id=self.tokenizer.eos_token_id,
+                pad_token_id=pad_id,
             )
-        new_tokens = out[0][inputs["input_ids"].shape[1]:]
-        return self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+        new_tokens = out[:, inputs["input_ids"].shape[1]:]
+        return [tok.decode(row, skip_special_tokens=True).strip() for row in new_tokens]
+
+    def chat(self, messages: Messages, *, max_new_tokens: int = 512, json_mode: bool = False,
+             meta: dict[str, Any] | None = None) -> str:
+        return self._generate([self.prompt(messages)], max_new_tokens)[0]
+
+    def _is_oom(self, exc: BaseException) -> bool:
+        oom = getattr(self.torch.cuda, "OutOfMemoryError", None)
+        return (oom is not None and isinstance(exc, oom)) or "out of memory" in str(exc).lower()
+
+    def chat_batch(self, messages_list: list[Messages], *, max_new_tokens: int = 512, json_mode: bool = False,
+                   metas: list[dict[str, Any] | None] | None = None, batch_size: int = 8) -> list[str]:
+        """Пакетная генерация. Промпты сортируются по длине, чтобы меньше места уходило на padding.
+        При нехватке памяти пакет уменьшается вдвое, вплоть до одного промпта."""
+        prompts = [self.prompt(m) for m in messages_list]
+        order = sorted(range(len(prompts)), key=lambda i: len(prompts[i]), reverse=True)
+        outputs: list[str | None] = [None] * len(prompts)
+        bs, i = max(1, batch_size), 0
+        while i < len(order):
+            idx = order[i:i + bs]
+            try:
+                texts = self._generate([prompts[j] for j in idx], max_new_tokens)
+            except Exception as exc:  # noqa: BLE001 — нужен именно перехват OOM от CUDA
+                if self._is_oom(exc) and bs > 1:
+                    self.torch.cuda.empty_cache()
+                    bs = max(1, bs // 2)
+                    continue
+                raise
+            for j, text in zip(idx, texts):
+                outputs[j] = text
+            i += len(idx)
+        return [o or "" for o in outputs]
+
+    def unload(self) -> None:
+        """Освобождает видеопамять перед загрузкой следующей модели."""
+        import gc
+
+        del self.model
+        gc.collect()
+        if self.torch.cuda.is_available():
+            self.torch.cuda.empty_cache()
 
 
 # --------------------------------------------------------------------------- OpenAI-совместимый сервер
@@ -175,6 +225,13 @@ class CachedLLM:
         payload = json.dumps([self.inner.name, messages, max_new_tokens, json_mode], ensure_ascii=False)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
+    def _store(self, records: list[tuple[str, dict[str, Any] | None, str]]) -> None:
+        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
+        with open(self.path, "a", encoding="utf-8") as fh:
+            for key, meta, output in records:
+                self._cache[key] = output
+                fh.write(json.dumps({"key": key, "meta": meta, "output": output}, ensure_ascii=False) + "\n")
+
     def chat(self, messages: Messages, *, max_new_tokens: int = 512, json_mode: bool = False,
              meta: dict[str, Any] | None = None) -> str:
         key = self._key(messages, max_new_tokens, json_mode)
@@ -183,11 +240,54 @@ class CachedLLM:
             return self._cache[key]
         self.misses += 1
         output = self.inner.chat(messages, max_new_tokens=max_new_tokens, json_mode=json_mode, meta=meta)
-        self._cache[key] = output
-        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
-        with open(self.path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"key": key, "meta": meta, "output": output}, ensure_ascii=False) + "\n")
+        self._store([(key, meta, output)])
         return output
+
+    def chat_batch(self, messages_list: list[Messages], *, max_new_tokens: int = 512, json_mode: bool = False,
+                   metas: list[dict[str, Any] | None] | None = None, batch_size: int = 8,
+                   on_progress: Callable[[int, int], None] | None = None) -> list[str]:
+        """Генерирует только промахи кэша, пакетами; каждый пакет сразу пишется на диск,
+        поэтому оборванный прогон продолжается с того же места."""
+        metas = metas or [None] * len(messages_list)
+        keys = [self._key(m, max_new_tokens, json_mode) for m in messages_list]
+        todo: dict[str, int] = {}
+        for i, k in enumerate(keys):
+            if k not in self._cache and k not in todo:
+                todo[k] = i
+        self.hits += len(keys) - len(todo)
+        self.misses += len(todo)
+        pending = sorted(todo.items(), key=lambda kv: -sum(len(m["content"]) for m in messages_list[kv[1]]))
+        done = 0
+        for start in range(0, len(pending), max(1, batch_size)):
+            chunk = pending[start:start + max(1, batch_size)]
+            outs = chat_many(self.inner, [messages_list[i] for _, i in chunk], max_new_tokens=max_new_tokens,
+                             json_mode=json_mode, metas=[metas[i] for _, i in chunk], batch_size=batch_size)
+            self._store([(k, metas[i], out) for (k, i), out in zip(chunk, outs)])
+            done += len(chunk)
+            if on_progress:
+                on_progress(done, len(pending))
+        return [self._cache[k] for k in keys]
+
+
+def chat_many(llm: Any, messages_list: list[Messages], *, max_new_tokens: int = 512, json_mode: bool = False,
+              metas: list[dict[str, Any] | None] | None = None, batch_size: int = 8,
+              on_progress: Callable[[int, int], None] | None = None) -> list[str]:
+    """Пакетный вызов, если бэкенд умеет; иначе по одному."""
+    if not messages_list:
+        return []
+    metas = metas or [None] * len(messages_list)
+    if hasattr(llm, "chat_batch"):
+        kwargs: dict[str, Any] = {"max_new_tokens": max_new_tokens, "json_mode": json_mode, "metas": metas,
+                                  "batch_size": batch_size}
+        if on_progress is not None and isinstance(llm, CachedLLM):
+            kwargs["on_progress"] = on_progress
+        return llm.chat_batch(messages_list, **kwargs)
+    outs = []
+    for i, (m, meta) in enumerate(zip(messages_list, metas), 1):
+        outs.append(llm.chat(m, max_new_tokens=max_new_tokens, json_mode=json_mode, meta=meta))
+        if on_progress:
+            on_progress(i, len(messages_list))
+    return outs
 
 
 # --------------------------------------------------------------------------- для тестов
