@@ -131,15 +131,15 @@ def test_condition_in_remission_is_named(checker):
 # ---------------------------------------------------------------- проверка до ответа
 
 
-def test_report_restrictions_skip_what_alerts_said(checker):
+def test_report_restrictions_only_for_open_questions(checker):
     p = profile_of(checker, [DRIVER])
     rep = checker.report(p, "Можно Супрастин?")
-    assert [a.rule_id for a in rep.alerts] == ["sedating+driving"]
-    assert all(r.rule_id != "sedating+driving" for r in rep.restrictions)
-    assert any(r.rule_id == "cns+driving" for r in rep.restrictions)
+    assert [a.rule_id for a in rep.alerts] == ["sedating+driving"] and rep.restrictions == []
     lines = rep.render()
-    assert lines[1] == SAFETY_HEADER and "Препараты из вопроса:" in lines and "Ограничения по профилю:" in lines
-
+    assert lines[1] == SAFETY_HEADER and "Препараты из вопроса:" in lines and "Ограничения по профилю:" not in lines
+    open_q = checker.report(p, "Что-нибудь от аллергии?")
+    assert open_q.alerts == [] and {r.rule_id for r in open_q.restrictions} >= {"sedating+driving", "cns+driving"}
+    assert "Ограничения по профилю:" in open_q.render()
 
 def test_rx_only_rules_are_not_profile_hints(checker):
     p = profile_of(checker, [f("special_states", "беременность")])
@@ -366,10 +366,11 @@ def test_post_check_counts_doses(checker, answer, doses):
 
 def test_restrictions_do_not_repeat_pair_alert(checker):
     p = profile_of(checker, [f("medications", "Варфарин")])
-    rep = checker.report(p, "Можно Найз?")
-    assert [a.rule_id for a in rep.alerts] == ["nsaid+anticoagulant"]
-    assert all(r.rule_id != "nsaid+anticoagulant" for r in rep.restrictions)
-    assert any(r.rule_id == "azole+warfarin" for r in rep.restrictions)
+    alerts = checker.check(checker.mentions("Можно Найз?", "question"), p)
+    said = {(a.rule_id, f"принимает {a.other.label}") for a in alerts if a.other}
+    assert ("nsaid+anticoagulant", "принимает варфарин") in said
+    rest = checker.report(p, "Что-нибудь от боли в спине?").restrictions
+    assert {r.rule_id for r in rest} >= {"nsaid+anticoagulant", "azole+warfarin"}
 
 
 # ---------------------------------------------------------------- справочник в формате выгрузки ГРЛС
@@ -413,3 +414,69 @@ def test_rx_only_drug_in_answer(real_checker):
     assert not covered.appended and covered.covered[0].rule_id == "rx_only"
     # назначенный препарат из памяти — не повод напоминать о рецепте
     assert real_checker.report(p, "Метипред можно пить утром?").alerts == []
+
+
+# ---------------------------------------------------------------- находки прогона на реальной выгрузке ГРЛС
+
+
+def test_composition_mentions_are_not_new_drugs(checker):
+    p = profile_of(checker, [f("special_states", "беременность")])
+    q = checker.mentions("Простыла, можно выпить Терафлю?", "question")
+    post = checker.post_check("Препарат содержит парацетамол, фенилэфрин и фенирамин. Терафлю при беременности "
+                              "противопоказан.", p, q)
+    assert {a.drug.canonical for a in post.alerts} == {"парацетамол + фенилэфрин + фенирамин"}
+    assert [d.canonical for d in post.answer_drugs] == ["парацетамол + фенилэфрин + фенирамин"]
+
+
+def test_inn_of_taken_drug_is_a_reference(checker):
+    p = profile_of(checker, [f("medications", "Эутирокс"), f("medications", "Кардиомагнил")])
+    q = checker.mentions("Изжога, можно Алмагель?", "question")
+    post = checker.post_check("Вы принимаете левотироксин, поэтому Алмагель — с интервалом 4 часа. "
+                              "Кардиомагнил (ацетилсалициловая кислота) продолжайте.", p, q)
+    assert [a.rule_id for a in post.alerts] == ["levothyroxine+chelating"] and not post.appended
+
+
+def test_trade_name_duplicate_still_caught(checker):
+    p = profile_of(checker, [f("medications", "МИГ")])
+    post = checker.post_check("Можно принять Нурофен.", p)
+    assert [a.rule_id for a in post.appended] == ["duplicate_ingredient"]
+
+
+def test_coverage_by_name_stem(checker):
+    p = profile_of(checker, [{"section": "lifestyle", "attribute": "alcohol", "value": "да", "evidence": "выпиваю"}])
+    q = checker.mentions("Голова болит, Панадол можно?", "question")
+    post = checker.post_check("Можно. Парацетамоловые средства при алкоголе вредят печени.", p, q)
+    assert not post.appended and post.covered[0].rule_id == "paracetamol+alcohol"
+
+
+def test_rx_only_skips_prescribed_and_known(real_checker):
+    p = profile_of(real_checker, [f("medications", "Метипред", status="stopped")])
+    assert real_checker.report(p, "Врач выписал Цефтриаксон, где купить?").alerts == []
+    assert real_checker.report(p, "Чем заменить Метипред?").alerts == []   # принимал раньше — назначал врач
+    assert [a.rule_id for a in real_checker.report(p, "Можно Цефтриаксон?").alerts] == ["rx_only"]
+
+
+def test_genitive_trade_name_without_inn_is_merged():
+    cat = DrugCatalog()
+    cat.add_products([Product("Парацетамола таблетки", (), (), routes=("systemic",), otc=True)])
+    assert cat.resolve("Парацетамола").canonical == "парацетамол"
+    assert [m.canonical for m in cat.mentions("при употреблении парацетамола")] == ["парацетамол"]
+    assert cat.summary()["merged_inn_variants"] == 1 and "парацетамола" not in cat
+
+
+def test_reason_in_next_sentence_about_same_drug(checker):
+    p = profile_of(checker, [DRIVER])
+    q = checker.mentions("Аллергия на цветение — Супрастин подойдёт?", "question")
+    ok = checker.post_check("Супрастин помогает при аллергии. Учитывая, что вы за рулём, он вызывает сонливость.", p, q)
+    assert not ok.appended
+    other = checker.post_check("Супрастин помогает при аллергии. Цетрин вызывает сонливость реже.", p, q)
+    assert [a.rule_id for a in other.appended] == ["sedating+driving"]  # про Цетрин причина названа
+
+
+def test_contraindication_must_be_a_prohibition(checker):
+    p = profile_of(checker, [f("chronic_conditions", "язва желудка")])
+    q = checker.mentions("Болит голова, Нурофен подойдёт?", "question")
+    soft = checker.post_check("Нурофен может помочь. Учитывайте язву — НПВП могут её усугубить.", p, q)
+    assert [a.rule_id for a in soft.appended] == ["nsaid+ulcer"]
+    hard = checker.post_check("Нурофен при язве противопоказан — возьмите Парацетамол.", p, q)
+    assert not hard.appended

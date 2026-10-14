@@ -377,14 +377,22 @@ def load_grls(
     files = grls_files(path)
     report = LoadReport(", ".join(str(f) for f in files))
     products: list[Product] = []
+    seen: set[str] = set()
     tables = ((name, rows) for f in files for name, rows in iter_tables(f))
     for name, rows_iter in tables:
-        head = list(islice(rows_iter, search_rows + 1))
         tr = TableReport(name=name, used=False)
         report.tables.append(tr)
+        # Архив папки с Google Drive содержит те же файлы, что лежат рядом: повтор не читаем
+        file_part, _, sheet = name.partition(":")
+        key = f"{Path(file_part).name}:{sheet}"
+        if key in seen:
+            tr.reason = "повтор: такая таблица уже прочитана"
+            continue
+        seen.add(key)
         if not include_excluded and EXCLUDED_TABLE_RE.search(fold(name)):
             tr.reason = "таблица исключённых записей"
             continue
+        head = list(islice(rows_iter, search_rows + 1))
         found = find_header(head, columns, search_rows)
         if found is None:
             tr.reason = "не найдены колонки торгового наименования и МНН"
@@ -490,6 +498,8 @@ class DrugCatalog:
         self._alias_atc: dict[str, set[str]] = {}
         self._alias_routes: dict[str, set[str]] = {}
         self._alias_otc: dict[str, set[bool]] = {}
+        self._no_inn: set[str] = set()                       # записи, ключ которых — торговое наименование
+        self._seed_conflicts: dict[str, set[str]] = {}       # синоним стартового набора → состав по ГРЛС
         self._lexicon: Lexicon | None = None
         self.stats: Counter = Counter()
         for e in (ref.DRUGS if seed is None else seed):
@@ -522,6 +532,7 @@ class DrugCatalog:
         elif owner != canonical:
             if self._alias_source[key] == "seed":
                 self.stats["seed_priority"] += 1  # стартовая запись важнее ГРЛС
+                self._seed_conflicts.setdefault(key, set()).add(canonical)
             elif clean_name(owner) == key:
                 self.stats["inn_name_priority"] += 1  # «Парацетамол» — это МНН, а не чужое торговое наименование
             else:
@@ -554,6 +565,10 @@ class DrugCatalog:
             canonical = clean_name(p.trade_name) or fold(p.trade_name)
             components = (canonical,)
             self.stats["no_inn"] += 1
+            if canonical not in self._entries:
+                self._no_inn.add(canonical)
+        if p.components:
+            self._no_inn.discard(canonical)
         entry = self._entry(canonical, components, source)
         entry.atc.update(p.atc)
         entry.routes.update(p.routes)
@@ -569,8 +584,59 @@ class DrugCatalog:
         for p in products:
             self.add_product(p, source)
             n += 1
+        self.merge_inn_variants()
         self._lexicon = None
         return n
+
+    _ENDINGS = ("ами", "ями", "ов", "ом", "ем", "ой", "ей", "ам", "ах", "а", "я", "у", "ю", "ы", "и", "е")
+
+    def _inn_variant(self, name: str) -> str | None:
+        """«парацетамола» → «парацетамол», если такое МНН есть в справочнике."""
+        words = name.split()
+        if not words:
+            return None
+        last = words[-1]
+        for ending in self._ENDINGS:
+            if last.endswith(ending) and len(last) - len(ending) >= 4:
+                stem = last[: -len(ending)]
+                for cand in (stem, stem + "а", stem + "я", stem + "ь"):
+                    target = " ".join(words[:-1] + [cand])
+                    if target != name and target in self._entries and target not in self._no_inn:
+                        return target
+        return None
+
+    def merge_inn_variants(self) -> int:
+        """Записи без МНН, у которых торговое наименование — МНН в другом падеже, сливаются с МНН.
+
+        В ГРЛС встречаются препараты без МНН с торговым наименованием вроде «Парацетамола …»:
+        без слияния слово «парацетамола» в ответе модели считалось бы отдельным препаратом.
+        """
+        merged = 0
+        for name in sorted(self._no_inn):
+            entry = self._entries.get(name)
+            target = self._inn_variant(name)
+            if entry is None or target is None or "seed" in entry.sources:
+                continue
+            dst = self._entries[target]
+            for alias in entry.aliases:
+                key = clean_name(alias)
+                if self._alias_owner.get(key) == name:
+                    self._alias_owner[key] = target
+                    dst.aliases.append(alias)
+            dst.atc |= entry.atc
+            dst.routes |= entry.routes
+            dst.otc |= entry.otc
+            dst.products += entry.products
+            dst.sources |= entry.sources
+            del self._entries[name]
+            if self._by_components.get(frozenset(entry.components)) == name:
+                del self._by_components[frozenset(entry.components)]
+            self._no_inn.discard(name)
+            merged += 1
+        self.stats["merged_inn_variants"] += merged
+        if merged:
+            self._lexicon = None
+        return merged
 
     @classmethod
     def from_grls(cls, path: str | Path | Iterable[str | Path], **kwargs: Any) -> tuple["DrugCatalog", LoadReport]:
@@ -710,12 +776,18 @@ class DrugCatalog:
             "ambiguous_aliases": len(self._ambiguous),
             "products": self.stats["products"],
             "no_inn_products": self.stats["no_inn"],
-            "seed_priority_conflicts": self.stats["seed_priority"],
+            "seed_priority_conflicts": len(self._seed_conflicts),
+            "merged_inn_variants": self.stats["merged_inn_variants"],
         }
 
     def ambiguous(self, limit: int = 20) -> list[tuple[str, list[str]]]:
         items = sorted(self._ambiguous.items(), key=lambda kv: (-len(kv[1]), kv[0]))
         return [(k, sorted(v)) for k, v in items[:limit]]
+
+    def seed_conflicts(self, limit: int = 50) -> list[tuple[str, str, list[str]]]:
+        """Синонимы стартового набора, которым в ГРЛС соответствует другой состав: (синоним, наш ключ, по ГРЛС)."""
+        items = sorted(self._seed_conflicts.items())[:limit]
+        return [(k, self._alias_owner.get(k, ""), sorted(v)) for k, v in items]
 
     def save(self, path: str | Path) -> None:
         """Кэш справочника (gzip JSON): ГРЛС разбирается один раз, дальше загружается за секунды."""
@@ -730,6 +802,8 @@ class DrugCatalog:
             "alias_routes": {k: sorted(v) for k, v in self._alias_routes.items()},
             "alias_otc": {k: sorted(v) for k, v in self._alias_otc.items()},
             "ambiguous": {k: sorted(v) for k, v in self._ambiguous.items()},
+            "no_inn": sorted(self._no_inn),
+            "seed_conflicts": {k: sorted(v) for k, v in self._seed_conflicts.items()},
             "stats": dict(self.stats),
         }
         with gzip.open(path, "wt", encoding="utf-8") as f:
@@ -753,5 +827,7 @@ class DrugCatalog:
         cat._alias_routes = {k: set(v) for k, v in data.get("alias_routes", {}).items()}
         cat._alias_otc = {k: set(v) for k, v in data.get("alias_otc", {}).items()}
         cat._ambiguous = {k: set(v) for k, v in data["ambiguous"].items()}
+        cat._no_inn = set(data.get("no_inn", ()))
+        cat._seed_conflicts = {k: set(v) for k, v in data.get("seed_conflicts", {}).items()}
         cat.stats = Counter(data["stats"])
         return cat

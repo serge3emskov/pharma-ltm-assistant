@@ -359,3 +359,15 @@ def test_save_load_keeps_routes_and_otc(real_catalog, tmp_path):
     loaded = DrugCatalog.load(path)
     for name in ("Нурофен", "Фастум", "Цефтриаксон", "Омез", "Визин"):
         assert loaded.resolve(name) == real_catalog.resolve(name)
+
+
+def test_zip_of_the_same_folder_is_not_read_twice(grls_dir, tmp_path):
+    d = tmp_path / "grls"
+    d.mkdir()
+    main = grls_dir / "grls2026-10-13-1-Действующий.xlsx"
+    (d / main.name).write_bytes(main.read_bytes())
+    with zipfile.ZipFile(d / "grls-20261014T052555Z-1-001.zip", "w") as zf:
+        zf.writestr(f"grls/{main.name}", main.read_bytes())
+    products, report = load_grls(d)
+    assert len(products) == len(REAL_ROWS)
+    assert [t.reason for t in report.tables if not t.used] == ["повтор: такая таблица уже прочитана"]

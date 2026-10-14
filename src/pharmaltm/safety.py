@@ -194,7 +194,7 @@ class RuleSet(_Model):
 class SafetyDrug:
     info: DrugInfo
     classes: frozenset[str]
-    origin: Literal["memory", "question", "answer", "allergy"]
+    origin: Literal["memory", "question", "prescribed", "answer", "allergy"]
     status: str | None = None
 
     @property
@@ -238,6 +238,7 @@ class Profile:
     sex: str | None = None
     lifestyle: dict[str, str] = field(default_factory=dict)
     child: bool = False
+    known_drugs: set[str] = field(default_factory=set)  # все препараты из памяти, в том числе бывшие и аллергены
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -418,10 +419,13 @@ class SafetyChecker:
         prof = Profile(subject=subject, child=subject in CHILD_SUBJECTS)
         for f in store.list_facts(user_id, subject):
             policy = POLICIES[f.section]
-            if f.section == Section.MEDICATIONS and f.status in policy.active_statuses:
-                info = self.catalog.from_key(f.key, f.raw_names)
-                prof.medications.append(self.drug(info, "memory", f.status))
+            if f.section == Section.MEDICATIONS:
+                prof.known_drugs.add(f.key)
+                if f.status in policy.active_statuses:
+                    info = self.catalog.from_key(f.key, f.raw_names)
+                    prof.medications.append(self.drug(info, "memory", f.status))
             elif f.section == Section.ALLERGIES and f.status == "active":
+                prof.known_drugs.add(f.key)
                 prof.allergies.append(self._allergy(f.key, f.raw_names, f.data.get("reaction_type") == "intolerance"))
             elif f.section == Section.CHRONIC_CONDITIONS and f.status in policy.active_statuses:
                 prof.conditions[f.key] = f.status
@@ -591,13 +595,15 @@ class SafetyChecker:
                 cands.append(d)
         found: list[Alert] = []
         rx = self.rules.builtin["rx_only"]
-        taking = {m.canonical for m in profile.medications}
+        # Препараты из памяти (принимает, принимал, аллергия) — назначал врач, о рецепте не напоминаем
+        known = {m.canonical for m in profile.medications} | profile.known_drugs | {
+            a.drug.canonical for a in profile.allergies if a.drug is not None}
         for i, d in enumerate(cands):
             found += self._allergy_alerts(d, profile)
             found += self._profile_alerts(d, profile)
             # Только по рецепту (по ГРЛС): ассистент такой препарат не предлагает, а покупателю нужен рецепт.
             # Препарат, который покупатель уже принимает, — назначен врачом, о нём не напоминаем
-            if d.info.otc is False and d.canonical not in taking:
+            if d.info.otc is False and d.canonical not in known and d.origin != "prescribed":
                 found.append(self._alert("rx_only", rx.level, d, "dispensing", "dispensing", "рецептурный препарат",
                                          rx.message, rx.reason, order=-3))
             for o in profile.medications:
@@ -689,12 +695,21 @@ class SafetyChecker:
         t = fold(text)
         return bool(self._TOGETHER_RE.search(t)) or not self._ALTERNATIVES_RE.search(t)
 
+    _PRESCRIBED_RE = re.compile(r"выписал|выписали|назначил|назначили|назначен|по рецепту|рецепт")
+
     def report(self, profile: Profile, question_text: str | None, with_restrictions: bool = True,
                max_restrictions: int = 6) -> SafetyReport:
-        q_drugs = self.mentions(question_text, "question") if question_text else []
+        """Проверка до ответа.
+
+        Ограничения по профилю нужны, когда модель будет выбирать препарат сама («что дать от
+        температуры?»). Если покупатель спрашивает о конкретном препарате, в контекст идут только
+        предупреждения о нём: список «чего не предлагать» там только отвлекает модель.
+        """
+        origin = "prescribed" if question_text and self._PRESCRIBED_RE.search(fold(question_text)) else "question"
+        q_drugs = self.mentions(question_text, origin) if question_text else []
         alerts = self.check(q_drugs, profile, pairs=self.is_combination(question_text or ""))
         restrictions: list[Restriction] = []
-        if with_restrictions:
+        if with_restrictions and not q_drugs:
             # То, что уже сказано про препараты из вопроса, второй раз не повторяем
             # (кроме аллергий: «другие НПВП» полезны, даже если про Найз из вопроса уже предупредили)
             said = {(a.rule_id, f"принимает {a.other.label}" if a.other is not None else a.trigger)
@@ -705,22 +720,88 @@ class SafetyChecker:
 
     # ------------------------------------------------------------------ после ответа
     _PROHIBIT_RE = re.compile(r"нельзя|не рекоменд|противопоказ|избега|не принима|не прием|не дава|не подход|"
-                              r"не подойд|не стоит|не использ|не применя|откаж|исключ")
+                              r"не подойд|не стоит|не использ|не применя|откаж|исключ|лучше не|не следует|"
+                              r"не нужно|запрещ")
+    _WARN_RE = re.compile(_PROHIBIT_RE.pattern + r"|осторожн|риск|опасн|только по назначению|без врача|"
+                                                r"посоветуйтесь с врачом|обратитесь к врачу|согласуйте с врачом|"
+                                                r"вызыва|повыша|усилива|ослабля|снижа|вред|превыш|передозир|уже принима")
     _PERMIT_RE = re.compile(r"\bможно\b|подойд[её]т|подходит|рекомендую|возьмите|примите|принимайте|допуст")
 
-    def _coverage(self, alert: Alert, answer: str, sentences: list[tuple[str, set[str]]]) -> str:
-        """covered — причина названа; declined — модель отговаривает от препарата без причины; missing."""
+    @staticmethod
+    def _stems(d: SafetyDrug) -> set[str]:
+        """Основы названия препарата для поиска в тексте: «Панадол» → «панад», «парацетамол» → «парацетам»."""
+        names = [clean_name(d.info.raw)]
+        if len(d.components) == 1:
+            names.append(clean_name(d.canonical))
+        stems = set()
+        for n in names:
+            first = n.split()[0] if n else ""
+            if len(first) >= 5:
+                stems.add(first[: max(5, len(first) - 2)])
+        return stems
+
+    def _coverage(self, alert: Alert, answer: str, sentences: list[tuple[str, set[str]]],
+                  single_drug: bool = False) -> str:
+        """covered — причина названа; declined — модель отговаривает от препарата без причины; missing.
+
+        single_drug — в ответе речь об одном препарате: тогда к нему относится любое предложение.
+        """
         pattern = re.compile(alert.reason)
-        names = {alert.drug.canonical} | ({alert.other.canonical} if alert.other else set())
-        with_drug = [s for s, found in sentences if found & names]
-        if with_drug:
-            if any(pattern.search(s) for s in with_drug):
+        drugs = [alert.drug] + ([alert.other] if alert.other else [])
+        names = {d.canonical for d in drugs}
+        stems = set().union(*(self._stems(d) for d in drugs))
+        # Где препарат назван: найден справочником или по основе названия («парацетамола»)
+        named = [i for i, (s, found) in enumerate(sentences) if found & names or any(st in s for st in stems)]
+        # К нему относятся и следующее предложение без других препаратов («Супрастин помогает при
+        # аллергии. Учитывая, что вы за рулём, — он вызывает сонливость»), а если в ответе один препарат —
+        # весь ответ
+        scope = set(range(len(sentences))) if single_drug and named else set(named)
+        for i in named:
+            if i + 1 < len(sentences) and not (sentences[i + 1][1] - names):
+                scope.add(i + 1)
+        if scope:
+            texts = [sentences[i][0] for i in sorted(scope)]
+            # Чем строже предупреждение, тем определённее должна быть формулировка:
+            # «противопоказано» — запрет («Нурофен при язве нельзя»), а не «НПВП могут усугубить язву»;
+            # «не рекомендуется без врача» — запрет или прямое указание на риск/осторожность;
+            # «с осторожностью» — достаточно назвать причину
+            marker = {"contraindicated": self._PROHIBIT_RE, "avoid": self._WARN_RE}.get(alert.level)
+            if any(pattern.search(s) and (marker is None or marker.search(s)) for s in texts):
                 return "covered"
-            for s in with_drug:
+            # Отговаривает от препарата — только в предложении, где он назван: «Аспирин детям нельзя»
+            for i in named:
+                s = sentences[i][0]
                 if self._PROHIBIT_RE.search(s) and not self._PERMIT_RE.search(self._PROHIBIT_RE.sub(" ", s)):
                     return "declined"
             return "missing"
         return "covered" if pattern.search(fold(answer)) else "missing"
+
+    @staticmethod
+    def _inn_named(d: SafetyDrug) -> bool:
+        """Назван по МНН, а не торговым наименованием: «левотироксин» для «левотироксин натрия» тоже."""
+        raw = clean_name(d.info.raw)
+        names = {clean_name(d.canonical)} | {clean_name(c) for c in d.components}
+        return any(n == raw or n.startswith(raw + " ") for n in names)
+
+    def _recommended(self, answer_drugs: list[SafetyDrug], question_drugs: Sequence[SafetyDrug],
+                     profile: Profile) -> list[SafetyDrug]:
+        """Убирает из препаратов ответа упоминания-пояснения, которые не являются новым препаратом.
+
+        «Терафлю содержит парацетамол, фенилэфрин и фенирамин», «Кардиомагнил (ацетилсалициловая
+        кислота)», «вы принимаете левотироксин» (а в памяти — Эутирокс): МНН, названное как состав
+        другого препарата из диалога или как действующее вещество того, что покупатель уже принимает.
+        """
+        others = [*question_drugs, *(d for d in answer_drugs if not self._inn_named(d)), *profile.medications]
+        out = []
+        for d in answer_drugs:
+            inn = self._inn_named(d)
+            if inn and any(o.canonical != d.canonical and set(d.components) <= set(o.components) for o in others):
+                continue  # состав другого препарата
+            if any(m.canonical == d.canonical and (inn or clean_name(m.info.raw) == clean_name(d.info.raw))
+                   for m in profile.medications):
+                continue  # то, что покупатель уже принимает (тем же названием или по МНН): назначение врача
+            out.append(d)
+        return out
 
     def post_check(self, answer: str, profile: Profile, question_drugs: Sequence[SafetyDrug] = (),
                    min_level: str = "caution") -> PostCheck:
@@ -732,14 +813,15 @@ class SafetyChecker:
         другое), достаточно, чтобы причина была где-то в ответе.
         Эвристика намеренно строгая: лучше лишнее предупреждение, чем пропущенное.
         """
-        answer_drugs = self.mentions(answer, "answer")
+        answer_drugs = self._recommended(self.mentions(answer, "answer"), question_drugs, profile)
         # Препараты из вопроса — первыми: при совпадении МНН препарат считается названным покупателем
         alerts = self.check([*question_drugs, *answer_drugs], profile)
         sentences = [(fold(s), {i.canonical for i in self.catalog.mentions(s)}) for s in split_sentences(answer)]
+        single = len({d.canonical for d in [*question_drugs, *answer_drugs]}) == 1
         groups: dict[str, list[Alert]] = {"covered": [], "declined": [], "missing": []}
         for a in alerts:
             if LEVEL_RANK[a.level] >= LEVEL_RANK[min_level]:
-                groups[self._coverage(a, answer, sentences)].append(a)
+                groups[self._coverage(a, answer, sentences, single and a.other is None)].append(a)
         appended, covered = groups["missing"], groups["covered"]
         text = answer
         if appended:

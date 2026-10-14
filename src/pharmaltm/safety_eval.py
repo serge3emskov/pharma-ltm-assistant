@@ -61,13 +61,16 @@ def run_cases(checker: SafetyChecker, cases: list[dict], normalizer: Normalizer 
         subject = normalizer.subject(c["subject"])
         profile = checker.profile(store, USER, subject, NOW)
         report = checker.report(profile, c["question"])
-        got = {(a.rule_id, a.drug.canonical) for a in report.alerts}
+        # «Только по рецепту» зависит от справочника (известно лишь с ГРЛС), а не от правил — считаем отдельно
+        rx = [a for a in report.alerts if a.trigger_kind == "dispensing"]
+        got = {(a.rule_id, a.drug.canonical) for a in report.alerts if a.trigger_kind != "dispensing"}
         exp = {tuple(x) for x in c["expect"]}
         rows.append({
             "id": c["id"], "title": c["title"], "ok": got == exp,
             "missing": sorted(map(list, exp - got)), "extra": sorted(map(list, got - exp)),
             "tp": len(got & exp), "fp": len(got - exp), "fn": len(exp - got),
             "question_drugs": [d.label for d in report.question_drugs],
+            "rx_only": [a.drug.label for a in rx],
             "alerts": [a.render() for a in report.alerts],
             "restrictions": [r.render() for r in report.restrictions],
         })
