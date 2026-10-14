@@ -136,10 +136,10 @@ def test_report_restrictions_only_for_open_questions(checker):
     rep = checker.report(p, "Можно Супрастин?")
     assert [a.rule_id for a in rep.alerts] == ["sedating+driving"] and rep.restrictions == []
     lines = rep.render()
-    assert lines[1] == SAFETY_HEADER and "Препараты из вопроса:" in lines and "Ограничения по профилю:" not in lines
+    assert lines[1] == SAFETY_HEADER and "Препараты из вопроса:" in lines and "Ограничения по профилю (чего не предлагать):" not in lines
     open_q = checker.report(p, "Что-нибудь от аллергии?")
     assert open_q.alerts == [] and {r.rule_id for r in open_q.restrictions} >= {"sedating+driving", "cns+driving"}
-    assert "Ограничения по профилю:" in open_q.render()
+    assert "Ограничения по профилю (чего не предлагать):" in open_q.render()
 
 def test_rx_only_rules_are_not_profile_hints(checker):
     p = profile_of(checker, [f("special_states", "беременность")])
@@ -480,3 +480,58 @@ def test_contraindication_must_be_a_prohibition(checker):
     assert [a.rule_id for a in soft.appended] == ["nsaid+ulcer"]
     hard = checker.post_check("Нурофен при язве противопоказан — возьмите Парацетамол.", p, q)
     assert not hard.appended
+
+
+# ---------------------------------------------------------------- прогон 2 на GPU: что исправлено
+
+
+BPH = f("chronic_conditions", "аденома простаты")
+
+
+def test_not_contraindicated_is_not_a_warning(checker):
+    p = profile_of(checker, [BPH])
+    q = checker.mentions("Аллергия, можно Супрастин?", "question")
+    post = checker.post_check("При аденоме простаты Супрастин не противопоказан, но может вызывать сонливость.", p, q)
+    assert [a.rule_id for a in post.appended] == ["sedating+bph"] and not post.declined
+    ok = checker.post_check("При аденоме простаты Супрастин не рекомендуется без врача. "
+                            "Препарат может вызвать задержку мочи.", p, q)
+    assert not ok.appended and [a.rule_id for a in ok.covered] == ["sedating+bph"]
+
+
+def test_decline_must_be_about_the_new_drug(checker):
+    p = profile_of(checker, [f("medications", "Кардиомагнил")])
+    q = checker.mentions("Болит голова, можно Нурофен?", "question")
+    answer = ("Да, можно использовать Нурофен. Вы принимаете Кардиомагнил, поэтому избегайте других препаратов "
+              "с ацетилсалициловой кислотой.")
+    post = checker.post_check(answer, p, q)
+    assert [a.rule_id for a in post.appended] == ["nsaid+antiplatelet"] and not post.declined
+
+
+def test_restrictions_grouped_by_trigger(checker):
+    p = profile_of(checker, [{"section": "demographics", "attribute": "age", "value": 6, "evidence": "6 лет"},
+                             f("allergies", "Амоксиклав")])
+    lines = checker.report(p, "Что дать от температуры?").render()
+    age = [x for x in lines if x.startswith("- Возраст 6 — противопоказано:")]
+    assert len(age) == 1 and "нимесулид — детям до 12 лет" in age[0] and "кеторолак" in age[0]
+    allergy = [x for x in lines if x.startswith("- Аллергия: амоксициллин")]
+    assert len(allergy) == 1 and "другие пенициллины — возможна перекрёстная реакция" in allergy[0]
+
+
+def test_clarify_block_reminds_that_check_sees_only_memory(checker):
+    store = MemoryStore()
+    n = Normalizer(catalog=checker.catalog)
+    MemoryWriter(store, n).write(USER, {"facts": [f("chronic_conditions", "язва желудка")]})
+    with_safety = ContextBuilder(store, n, safety=checker).build(USER, [QueryType.SYMPTOM_RELIEF]).render()
+    plain = ContextBuilder(store, n).build(USER, [QueryType.SYMPTOM_RELIEF]).render()
+    assert "НУЖНО УТОЧНИТЬ" in with_safety and "эти вопросы не заменяет" in with_safety
+    assert "НУЖНО УТОЧНИТЬ" in plain and "эти вопросы не заменяет" not in plain
+
+
+def test_analog_question_gets_profile_restrictions(checker):
+    p = profile_of(checker, [f("allergies", "Флемоксин")])
+    rep = checker.report(p, "Чем заменить Флемоксин?")
+    assert [a.rule_id for a in rep.alerts] == ["allergy_direct"]
+    # модель выберет замену сама: ей нужно знать, что и цефалоспорины без врача не подходят
+    assert [r.rule_id for r in rep.restrictions] == ["allergy_cross", "penicillin_allergy+cephalosporin"]
+    assert checker.report(p, "Можно Флемоксин?").restrictions == []
+    assert checker.report(p, "Флемоксин дорогой", choosing=True).restrictions  # классификатор: ANALOG

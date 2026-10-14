@@ -172,10 +172,14 @@ class ContextBundle:
                 lines.append(f"- {rec.date}: «{rec.name_raw}» × {rec.quantity} → {normalized}")
             lines.append("Если покупки расходятся со словами покупателя, не выбирай одну версию сам — уточни.")
         lines += self._render_reference()
-        lines += self.safety.render() if self.safety else []
+        safety = self.safety.render() if self.safety else []
+        lines += safety
         if self.clarify:
+            # Проверка по справочнику видит только память: что покупатель не сказал, она не проверила
+            note = "; проверка по справочнику учла только то, что есть в памяти, и эти вопросы не заменяет" \
+                if safety else ""
             lines += ["", "### НУЖНО УТОЧНИТЬ ПЕРЕД РЕКОМЕНДАЦИЕЙ (этого нет в памяти; "
-                          "если покупатель уже сказал об этом в текущем диалоге — не переспрашивай)"]
+                          f"если покупатель уже сказал об этом в текущем диалоге — не переспрашивай{note})"]
             lines += [c.render() for c in self.clarify]
         return "\n".join(lines)
 
@@ -307,7 +311,8 @@ class ContextBuilder:
             # беременность важна и для вопроса «чем заменить Нурофен»
             profile = self.safety.profile(self.store, user_id, subject, now)
             bundle.safety = self.safety.report(profile, reference_text,
-                                               with_restrictions=bool(RECOMMENDING_QUERIES & set(qts)))
+                                               with_restrictions=bool(RECOMMENDING_QUERIES & set(qts)),
+                                               choosing=True if QueryType.ANALOG in qts else None)
         return bundle
 
     @staticmethod

@@ -371,3 +371,74 @@ def test_zip_of_the_same_folder_is_not_read_twice(grls_dir, tmp_path):
     products, report = load_grls(d)
     assert len(products) == len(REAL_ROWS)
     assert [t.reason for t in report.tables if not t.used] == ["повтор: такая таблица уже прочитана"]
+
+
+# ---------------------------------------------------------------- прогон 2: неоднозначные наименования
+
+
+def _amb_catalog() -> DrugCatalog:
+    cat = DrugCatalog()
+    cat.add_products([
+        Product("Ингалипт", ("сульфаниламид", "тимол")),
+        Product("Ингалипт", ("сульфаниламид", "тимол")),
+        Product("Ингалипт", ("сульфатиазол", "тимол")),          # вариант написания состава — реже
+        Product("Валидол", ()),                                   # сначала строка без МНН…
+        Product("Валидол", ("левоментола раствор в ментилизовалерате",)),  # …потом с составом
+        Product("Алмагель", ()),                                  # без МНН, но наименование есть в стартовом наборе
+        Product("Панангин", ("калия и магния аспарагинат",)),     # одно МНН в ГРЛС — два вещества у нас
+        Product("От кашля", ("алтея корней экстракт",)),
+    ])
+    return cat
+
+
+def test_ambiguous_name_resolved_by_majority_keeps_all_components():
+    cat = _amb_catalog()
+    info = cat.resolve("Ингалипт")
+    assert info.matched and info.canonical == "сульфаниламид + тимол"
+    assert set(info.components) == {"сульфаниламид", "тимол", "сульфатиазол"}  # для проверки — все вещества
+    assert [m.canonical for m in cat.mentions("Брызгаю Ингалипт")] == ["сульфаниламид + тимол"]
+    assert cat.resolved()[0][:2] == ("ингалипт", "сульфаниламид + тимол")
+    assert "ингалипт" not in dict(cat.ambiguous())
+
+
+def test_trade_name_without_inn_joins_entry_with_inn():
+    cat = _amb_catalog()
+    assert cat.resolve("Валидол").canonical == "левоментола раствор в ментилизовалерате"
+    assert "валидол" not in cat and cat.summary()["no_inn_merged"] == 1
+    assert cat.resolve("Алмагель").canonical == "алгелдрат + магния гидроксид"
+    assert "алмагель" not in cat and cat.summary()["seed_priority_conflicts"] == 0
+
+
+def test_inn_split_synonym():
+    assert parse_inn("Калия и магния аспарагинат") == ("калия аспарагинат", "магния аспарагинат")
+    cat = _amb_catalog()
+    assert cat.resolve("Панангин").canonical == "калия аспарагинат + магния аспарагинат"
+    assert cat.seed_conflicts() == []
+
+
+def test_name_starting_with_preposition_is_not_a_mention():
+    cat = _amb_catalog()
+    assert cat.resolve("От кашля").matched           # как название в памяти — находится
+    assert cat.mentions("Что выпить от кашля?") == []  # в речи — нет
+
+
+def test_resolution_survives_save_and_load(tmp_path):
+    cat = _amb_catalog()
+    cat.save(tmp_path / "c.json.gz")
+    loaded = DrugCatalog.load(tmp_path / "c.json.gz")
+    assert loaded.resolve("Ингалипт") == cat.resolve("Ингалипт")
+    assert loaded.summary() == cat.summary() and loaded.resolved() == cat.resolved()
+
+
+def test_stale_cache_is_rejected(tmp_path):
+    import gzip
+    import json
+    path = tmp_path / "c.json.gz"
+    _amb_catalog().save(path)
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        data = json.load(f)
+    data["version"] = 1
+    with gzip.open(path, "wt", encoding="utf-8") as f:
+        json.dump(data, f)
+    with pytest.raises(ValueError, match="другой версией"):
+        DrugCatalog.load(path)

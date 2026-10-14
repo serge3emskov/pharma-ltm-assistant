@@ -302,6 +302,7 @@ class Restriction:
     target: str
     trigger: str
     message: str
+    note: str = ""  # пояснение для сгруппированного вида: «детям до 12 лет» вместо «противопоказан детям до 12 лет»
 
     def render(self) -> str:
         return _cap(f"{self.target} — {LEVEL_LABELS[self.level]} ({self.trigger}): {self.message}")
@@ -309,6 +310,38 @@ class Restriction:
     def as_dict(self) -> dict[str, Any]:
         return {"rule": self.rule_id, "level": self.level, "target": self.target, "trigger": self.trigger,
                 "text": self.render()}
+
+
+_NOTE_LEVEL_RE = re.compile(r"^(?:[—–-]\s*)?(?:противопоказан\w*|не рекомендуется\w*)?\s*")
+_NOTE_STATE_RE = re.compile(r"^при (?:беременности|грудном вскармливании)(?: и (?:грудном вскармливании|беременности))?\s*")
+
+
+def _short_note(message: str) -> str:
+    """Пояснение без того, что уже сказано уровнем и причиной группы.
+
+    «противопоказан детям до 12 лет» → «детям до 12 лет»; «при грудном вскармливании противопоказаны
+    (на время лечения кормление прекращают)» → «на время лечения кормление прекращают».
+    """
+    note = _NOTE_LEVEL_RE.sub("", message.strip())
+    note = _NOTE_LEVEL_RE.sub("", _NOTE_STATE_RE.sub("", note))
+    if note.startswith("(") and note.endswith(")"):
+        note = note[1:-1]
+    return note.replace(";", ",").strip()
+
+
+def render_restrictions(restrictions: Sequence[Restriction]) -> list[str]:
+    """Ограничения одной причины — одной строкой: «Возраст 6 — противопоказано: кеторолак — …; нимесулид — …»."""
+    groups: dict[tuple[str, str], list[Restriction]] = {}
+    for r in restrictions:
+        groups.setdefault((r.trigger, r.level), []).append(r)
+    lines = []
+    for (trigger, level), rs in groups.items():
+        if len(rs) == 1:
+            lines.append(f"- {rs[0].render()}")
+        else:
+            items = "; ".join(f"{r.target} — {r.note}" if r.note else r.target for r in rs)
+            lines.append(f"- {_cap(trigger)} — {LEVEL_LABELS[level]}: {items}")
+    return lines
 
 
 SAFETY_HEADER = ("### ПРОВЕРКА ПО СПРАВОЧНИКУ (выполнена кодом по инструкциям к препаратам). Не предлагай препараты "
@@ -333,8 +366,8 @@ class SafetyReport:
             lines.append("Препараты из вопроса:")
             lines += [f"- {a.render()}" for a in self.alerts]
         if self.restrictions:
-            lines.append("Ограничения по профилю:")
-            lines += [f"- {r.render()}" for r in self.restrictions]
+            lines.append("Ограничения по профилю (чего не предлагать):")
+            lines += render_restrictions(self.restrictions)
         return lines
 
     def as_dict(self) -> dict[str, Any]:
@@ -624,19 +657,20 @@ class SafetyChecker:
         """Чего не предлагать этому покупателю, ещё до того, как модель назовёт препарат."""
         out: list[Restriction] = []
 
-        def add(rule_id: str, level: str, target: str, trigger: str, message: str) -> None:
+        def add(rule_id: str, level: str, target: str, trigger: str, message: str, note: str | None = None) -> None:
             if LEVEL_RANK[level] >= LEVEL_RANK[min_level]:
-                out.append(Restriction(rule_id, level, target, trigger, message))
+                out.append(Restriction(rule_id, level, target, trigger, message,
+                                       _short_note(message) if note is None else note))
 
         for a in profile.allergies:
             b = self.rules.builtin
             for cid in a.class_ids:
                 add("allergy_class", b["allergy_class"].level, self.rules.class_label(cid), a.label,
-                    b["allergy_class"].message)
+                    b["allergy_class"].message, "")
             if a.drug is not None:
                 comps = ", ".join(a.drug.components)
                 kind = "intolerance" if a.intolerance else "allergy_direct"
-                add(kind, b[kind].level, f"препараты, содержащие {comps}", a.label, b[kind].message)
+                add(kind, b[kind].level, f"препараты, содержащие {comps}", a.label, b[kind].message, "")
                 for cid in a.drug.classes:
                     cl = self._classes[cid].cross_allergy
                     if cl:
@@ -646,7 +680,7 @@ class SafetyChecker:
                                 f"другие {self.rules.class_label(cid)}", a.label, b["intolerance"].message)
                         else:
                             add("allergy_cross", cl, f"другие {self.rules.class_label(cid)}", a.label,
-                                b["allergy_cross"].message)
+                                b["allergy_cross"].message, "возможна перекрёстная реакция")
             allergen_classes = set(a.class_ids) | (set(a.drug.classes) if a.drug else set())
             for r in self.rules.rules:
                 if r.kind == "allergy_cross" and r.allergen and set(r.allergen.classes) & allergen_classes:
@@ -696,24 +730,29 @@ class SafetyChecker:
         return bool(self._TOGETHER_RE.search(t)) or not self._ALTERNATIVES_RE.search(t)
 
     _PRESCRIBED_RE = re.compile(r"выписал|выписали|назначил|назначили|назначен|по рецепту|рецепт")
+    _ANALOG_RE = re.compile(r"замен|вместо|аналог|альтернатив|подешевле|дешевле|что-то другое|что то другое")
 
     def report(self, profile: Profile, question_text: str | None, with_restrictions: bool = True,
-               max_restrictions: int = 6) -> SafetyReport:
+               max_restrictions: int = 6, choosing: bool | None = None) -> SafetyReport:
         """Проверка до ответа.
 
-        Ограничения по профилю нужны, когда модель будет выбирать препарат сама («что дать от
-        температуры?»). Если покупатель спрашивает о конкретном препарате, в контекст идут только
-        предупреждения о нём: список «чего не предлагать» там только отвлекает модель.
+        Ограничения по профилю нужны, когда модель будет выбирать препарат сама: «что дать от
+        температуры?» или «чем заменить Флемоксин?» (choosing; если не задано — по словам вопроса).
+        Если покупатель спрашивает о конкретном препарате, в контекст идут только предупреждения
+        о нём: список «чего не предлагать» там только отвлекает модель.
         """
         origin = "prescribed" if question_text and self._PRESCRIBED_RE.search(fold(question_text)) else "question"
         q_drugs = self.mentions(question_text, origin) if question_text else []
         alerts = self.check(q_drugs, profile, pairs=self.is_combination(question_text or ""))
+        if choosing is None:
+            choosing = bool(question_text and self._ANALOG_RE.search(fold(question_text)))
         restrictions: list[Restriction] = []
-        if with_restrictions and not q_drugs:
+        if with_restrictions and (not q_drugs or choosing):
             # То, что уже сказано про препараты из вопроса, второй раз не повторяем
-            # (кроме аллергий: «другие НПВП» полезны, даже если про Найз из вопроса уже предупредили)
+            # (кроме аллергий на группу: «другие НПВП» полезны, даже если про Найз из вопроса уже предупредили)
             said = {(a.rule_id, f"принимает {a.other.label}" if a.other is not None else a.trigger)
-                    for a in alerts if a.trigger_kind != "allergy"}
+                    for a in alerts
+                    if a.trigger_kind != "allergy" or a.rule_id in ("allergy_direct", "intolerance")}
             restrictions = [r for r in self.restrictions(profile, limit=50)
                             if (r.rule_id, r.trigger) not in said][:max_restrictions]
         return SafetyReport(profile, q_drugs, alerts, restrictions)
@@ -724,8 +763,12 @@ class SafetyChecker:
                               r"не нужно|запрещ")
     _WARN_RE = re.compile(_PROHIBIT_RE.pattern + r"|осторожн|риск|опасн|только по назначению|без врача|"
                                                 r"посоветуйтесь с врачом|обратитесь к врачу|согласуйте с врачом|"
-                                                r"вызыва|повыша|усилива|ослабля|снижа|вред|превыш|передозир|уже принима")
+                                                r"вызыва|вызв|привод|привест|повыша|усилива|ослабля|снижа|вред|"
+                                                r"превыш|передозир|уже принима")
     _PERMIT_RE = re.compile(r"\bможно\b|подойд[её]т|подходит|рекомендую|возьмите|примите|принимайте|допуст")
+    # «не противопоказан», «противопоказаний нет» — это разрешение, а не запрет
+    _NEGATED_PROHIBIT_RE = re.compile(r"\bне\s+(?:является\s+|был[аио]?\s+)?(?:противопоказ|запрещ)\w*|"
+                                      r"\b(?:нет|без)\s+противопоказан\w*|противопоказаний\s+нет")
 
     @staticmethod
     def _stems(d: SafetyDrug) -> set[str]:
@@ -750,8 +793,16 @@ class SafetyChecker:
         drugs = [alert.drug] + ([alert.other] if alert.other else [])
         names = {d.canonical for d in drugs}
         stems = set().union(*(self._stems(d) for d in drugs))
+        # «Не противопоказан» заменяем на «можно»: такое предложение — разрешение. Строгое предупреждение
+        # оно не закрывает, даже если в нём названа причина: «при аденоме Супрастин не противопоказан»
+        endorsed = {i for i, (s, _) in enumerate(sentences) if self._NEGATED_PROHIBIT_RE.search(s)}
+        strict = LEVEL_RANK[alert.level] >= LEVEL_RANK["avoid"]
+        sentences = [(self._NEGATED_PROHIBIT_RE.sub(" можно ", s), found) for s, found in sentences]
         # Где препарат назван: найден справочником или по основе названия («парацетамола»)
         named = [i for i, (s, found) in enumerate(sentences) if found & names or any(st in s for st in stems)]
+        drug_stems = self._stems(alert.drug)
+        named_drug = [i for i in named
+                      if alert.drug.canonical in sentences[i][1] or any(st in sentences[i][0] for st in drug_stems)]
         # К нему относятся и следующее предложение без других препаратов («Супрастин помогает при
         # аллергии. Учитывая, что вы за рулём, — он вызывает сонливость»), а если в ответе один препарат —
         # весь ответ
@@ -760,7 +811,7 @@ class SafetyChecker:
             if i + 1 < len(sentences) and not (sentences[i + 1][1] - names):
                 scope.add(i + 1)
         if scope:
-            texts = [sentences[i][0] for i in sorted(scope)]
+            texts = [sentences[i][0] for i in sorted(scope) if not (strict and i in endorsed)]
             # Чем строже предупреждение, тем определённее должна быть формулировка:
             # «противопоказано» — запрет («Нурофен при язве нельзя»), а не «НПВП могут усугубить язву»;
             # «не рекомендуется без врача» — запрет или прямое указание на риск/осторожность;
@@ -768,8 +819,9 @@ class SafetyChecker:
             marker = {"contraindicated": self._PROHIBIT_RE, "avoid": self._WARN_RE}.get(alert.level)
             if any(pattern.search(s) and (marker is None or marker.search(s)) for s in texts):
                 return "covered"
-            # Отговаривает от препарата — только в предложении, где он назван: «Аспирин детям нельзя»
-            for i in named:
+            # Отговаривает от препарата — только в предложении, где назван он сам (а не то, что уже
+            # принимают): «Аспирин детям нельзя»; «принимаете Кардиомагнил — избегайте…» про Нурофен не говорит
+            for i in named_drug:
                 s = sentences[i][0]
                 if self._PROHIBIT_RE.search(s) and not self._PERMIT_RE.search(self._PROHIBIT_RE.sub(" ", s)):
                     return "declined"

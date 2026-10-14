@@ -1,6 +1,6 @@
 {
- "created": "2026-10-14T09:18:20",
- "version": "0.4.1",
+ "created": "2026-10-14T09:49:31",
+ "version": "0.4.3",
  "catalog": {
   "entries": 70,
   "entries_by_source": {
@@ -13,6 +13,8 @@
   "rx_only": 0,
   "aliases": 197,
   "ambiguous_aliases": 0,
+  "ambiguous_resolved": 0,
+  "no_inn_merged": 0,
   "products": 0,
   "no_inn_products": 0,
   "seed_priority_conflicts": 0,
