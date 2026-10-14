@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .followup import clarify_check
 from .evaluation import GoldenSet, check_answer, gold_backend, run_golden
 from .llm import chat_many
 from .memory import MemoryWriter
@@ -142,7 +143,7 @@ def build_e2e_prompts(checker: SafetyChecker, cases: list[dict], normalizer: Nor
         bundle = builder.build(USER, [QueryType(t) for t in c["query_types"]], subject, reference_text=c["question"])
         # Профиль и препараты из вопроса нужны и без блока в контексте: проверка после ответа работает всегда
         report = checker.report(checker.profile(store, USER, subject, NOW), c["question"])
-        items.append({"case": c, "context": bundle.render(), "report": report,
+        items.append({"case": c, "context": bundle.render(), "report": report, "bundle": bundle,
                       "prompt": answer_messages(bundle.render(), [], c["question"])})
     return items
 
@@ -165,11 +166,13 @@ def run_safety_e2e(llm: Any, checker: SafetyChecker, cases: list[dict], *, norma
             c, report = it["case"], it["report"]
             raw = a.strip()
             post = checker.post_check(raw, report.profile, report.question_drugs)
+            clar = clarify_check(post.text, it["bundle"].clarify, it["bundle"].subject, bool(post.answer_drugs))
             rows.append({
                 "id": c["id"], "title": c["title"], "condition": cond, "question": c["question"],
-                "context": it["context"], "raw": raw, "final": post.text,
+                "context": it["context"], "raw": raw, "final": clar.text,
                 "checks_raw": check_answer(raw, c["answer_checks"]),
-                "checks_final": check_answer(post.text, c["answer_checks"]),
+                "checks_final": check_answer(clar.text, c["answer_checks"]),
+                "clarify": clar.as_dict(),
                 "expected_alerts": [a.render() for a in report.alerts],
                 "answer_drugs": [d.label for d in post.answer_drugs],
                 "covered": [a.render() for a in post.covered],
@@ -200,6 +203,9 @@ def summarize_e2e(rows: list[dict]) -> dict[str, dict[str, Any]]:
             "answers_with_appended": sum(1 for r in rs if r["appended"]),
             "appended_avoid_or_worse": serious,
             "answers_with_doses": sum(1 for r in rs if r.get("doses")),
+            "clarify_asked_by_model": f"{sum(len(r['clarify']['asked']) for r in rs if r.get('clarify'))}/"
+                                      f"{sum(len(r['clarify']['asked']) + len(r['clarify']['appended']) for r in rs if r.get('clarify'))}",
+            "answers_with_appended_questions": sum(1 for r in rs if r.get("clarify", {}).get("appended")),
         }
     return out
 

@@ -1,6 +1,6 @@
 """Пересчёт E2E этапа 4 по сохранённым ответам: текущая проверка после ответа, без новой генерации.
 
-Запуск: python scripts/recheck_stage4.py reports/stage4_run2.json
+Запуск: python scripts/recheck_stage4.py reports/stage4_run3.json
 Справочник — стартовый набор, поэтому проверка «только по рецепту» не участвует (она требует ГРЛС).
 """
 from __future__ import annotations
@@ -14,6 +14,9 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from pharmaltm import Normalizer, SafetyChecker  # noqa: E402
 from pharmaltm.evaluation import check_answer  # noqa: E402
+from pharmaltm.followup import clarify_check  # noqa: E402
+from pharmaltm.retrieval import ContextBuilder  # noqa: E402
+from pharmaltm.schemas import QueryType  # noqa: E402
 from pharmaltm.safety_eval import NOW, USER, case_store, load_cases  # noqa: E402
 
 
@@ -29,11 +32,19 @@ def main(path: str) -> None:
         profile = checker.profile(store, USER, normalizer.subject(case["subject"]), NOW)
         pre = checker.report(profile, case["question"])
         post = checker.post_check(row["raw"], profile, pre.question_drugs)
+        bundle = ContextBuilder(store, normalizer, lambda: NOW, safety=checker).build(
+            USER, [QueryType(q) for q in case["query_types"]], normalizer.subject(case["subject"]),
+            reference_text=case["question"])
+        clar = clarify_check(post.text, bundle.clarify, bundle.subject, bool(post.answer_drugs))
         t = totals.setdefault(row["condition"], {"answers": 0, "checks_raw": 0, "checks_final": 0, "handled": 0,
-                                                 "appended": 0, "answers_with_appended": 0})
+                                                 "appended": 0, "answers_with_appended": 0, "clarify": 0,
+                                                 "clarify_asked": 0, "answers_with_questions": 0})
+        t["clarify"] += len(clar.asked) + len(clar.appended)
+        t["clarify_asked"] += len(clar.asked)
+        t["answers_with_questions"] += bool(clar.appended)
         t["answers"] += 1
         t["checks_raw"] += all(c["passed"] for c in check_answer(row["raw"], case["answer_checks"]))
-        t["checks_final"] += all(c["passed"] for c in check_answer(post.text, case["answer_checks"]))
+        t["checks_final"] += all(c["passed"] for c in check_answer(clar.text, case["answer_checks"]))
         t["handled"] += len(post.covered) + len(post.declined)
         t["appended"] += len(post.appended)
         t["answers_with_appended"] += bool(post.appended)
@@ -44,8 +55,10 @@ def main(path: str) -> None:
         share = t["handled"] / (t["handled"] + t["appended"]) if t["handled"] + t["appended"] else 1.0
         print(f"{cond}: эвристики {t['checks_raw']}/{t['answers']} → {t['checks_final']}/{t['answers']}; "
               f"учтено моделью {t['handled']} из {t['handled'] + t['appended']} ({share:.0%}); "
-              f"ответов с дописанным предупреждением {t['answers_with_appended']}")
+              f"ответов с дописанным предупреждением {t['answers_with_appended']}; "
+              f"вопросов «НУЖНО УТОЧНИТЬ» задано моделью {t['clarify_asked']} из {t['clarify']}, "
+              f"ответов с дописанными вопросами {t['answers_with_questions']}")
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "reports" / "stage4_run2.json"))
+    main(sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "reports" / "stage4_run3.json"))

@@ -20,6 +20,7 @@ from typing import Any, Callable, Iterable
 
 from pydantic import ValidationError
 
+from .followup import ClarifyCheck, clarify_check
 from .lexicon import fold
 from .llm import LLM, Messages, extract_json_object
 from .memory import MemoryWriter, WriteReport
@@ -395,10 +396,12 @@ class AssistantReply:
     latency_s: float
     raw_text: str = ""              # ответ модели до проверки
     safety: PostCheck | None = None
+    clarify: ClarifyCheck | None = None  # вопросы из «НУЖНО УТОЧНИТЬ», которые дописал код
 
     def as_dict(self) -> dict[str, Any]:
         return {"text": self.text, "raw_text": self.raw_text, "latency_s": round(self.latency_s, 2),
-                "safety": self.safety.as_dict() if self.safety else None, "read": self.read.as_dict()}
+                "safety": self.safety.as_dict() if self.safety else None,
+                "clarify": self.clarify.as_dict() if self.clarify else None, "read": self.read.as_dict()}
 
 
 class PharmacyAssistant:
@@ -436,10 +439,13 @@ class PharmacyAssistant:
         t0 = time.perf_counter()
         raw = self.llm.chat(answer_messages(read.bundle.render(), history, message),
                             max_new_tokens=self.answer_max_new_tokens, meta={"task": "answer"}).strip()
-        post = None
+        post = clar = None
+        text = raw
         if self.safety is not None and read.bundle.safety is not None:
             post = self.safety.post_check(raw, read.bundle.safety.profile, read.bundle.safety.question_drugs)
-        return AssistantReply(post.text if post else raw, read, time.perf_counter() - t0, raw, post)
+            clar = clarify_check(post.text, read.bundle.clarify, read.bundle.subject, bool(post.answer_drugs))
+            text = clar.text
+        return AssistantReply(text, read, time.perf_counter() - t0, raw, post, clar)
 
     def session(self, user_id: str, dialog_id: str | None = None,
                 purchases: Iterable[PurchaseRecord] | None = None) -> "ChatSession":

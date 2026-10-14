@@ -27,6 +27,7 @@ from typing import Any, Callable, Iterable
 from rapidfuzz import fuzz
 
 from .devcheck import GoldLLM, QueryResult, _prf, run_query_dev, summarize_queries
+from .followup import clarify_check
 from .lexicon import fold
 from .llm import chat_many, extract_json_object
 from .memory import CODE_RULE_PREFIX, MemoryWriter
@@ -223,6 +224,7 @@ class ProbeRun:
     answer_raw: str | None = None        # ответ модели до проверки
     answer_results_raw: list[dict] = field(default_factory=list)
     post_check: Any = None               # PostCheck
+    clarify_check: Any = None            # ClarifyCheck: вопросы из «НУЖНО УТОЧНИТЬ», дописанные кодом
 
 
 @dataclass
@@ -403,7 +405,9 @@ def run_golden(
             if safety is not None and p.bundle_llm.safety is not None:
                 p.post_check = safety.post_check(p.answer_raw, p.bundle_llm.safety.profile,
                                                  p.bundle_llm.safety.question_drugs)
-                p.answer = p.post_check.text
+                p.clarify_check = clarify_check(p.post_check.text, p.bundle_llm.clarify, p.bundle_llm.subject,
+                                                bool(p.post_check.answer_drugs))
+                p.answer = p.clarify_check.text
             p.answer_results = check_answer(p.answer, p.gold["answer_checks"])
             p.answer_results_raw = check_answer(p.answer_raw, p.gold["answer_checks"])
     t_answers = time.perf_counter() - t1
@@ -683,6 +687,7 @@ def summarize(run: EvalRun) -> dict[str, Any]:
     results = [c for p in answered for c in p.answer_results]
     results_raw = [c for p in answered for c in p.answer_results_raw]
     post = [p.post_check for p in answered if p.post_check is not None]
+    clar = [p.clarify_check for p in answered if p.clarify_check is not None]
 
     # ---- ошибки по этапам
     errors = [e for r in run.scenarios for e in attribute_errors(r)]
@@ -736,6 +741,9 @@ def summarize(run: EvalRun) -> dict[str, Any]:
             "appended_warnings": sum(len(x.appended) for x in post),
             "covered_warnings": sum(len(x.covered) + len(x.declined) for x in post),
             "answers_with_doses": sum(1 for x in post if x.doses),
+            "clarify_expected": sum(len(x.asked) + len(x.appended) for x in clar),
+            "clarify_asked_by_model": sum(len(x.asked) for x in clar),
+            "answers_with_appended_questions": sum(1 for x in clar if x.appended),
         },
         "queries": {"llm": summarize_queries(run.queries_llm), "rules": summarize_queries(run.queries_rules)},
         "errors_by_stage": dict(Counter(e["error"] for e in errors).most_common()),
@@ -820,6 +828,7 @@ def to_report(run: EvalRun, golden: GoldenSet | None = None) -> dict[str, Any]:
                 "answer_checks_raw": p.answer_results_raw if p.answer_raw != p.answer else None,
                 "safety": p.bundle_llm.safety.as_dict() if p.bundle_llm.safety else None,
                 "post_check": p.post_check.as_dict() if p.post_check else None,
+                "clarify_check": p.clarify_check.as_dict() if p.clarify_check else None,
             })
     return {
         "model": run.model,
@@ -859,6 +868,9 @@ COMPARE_ROWS: list[tuple[str, Callable[[dict], Any]]] = [
     ("  ответов с дописанным предупреждением",
      lambda s: (f"{s['e2e_answers']['answers_with_appended_warnings']}/{s['e2e_answers']['safety_checked']}"
                 if s["e2e_answers"].get("safety_checked") else "—")),
+    ("  вопросов «НУЖНО УТОЧНИТЬ» задала модель",
+     lambda s: (f"{s['e2e_answers']['clarify_asked_by_model']}/{s['e2e_answers']['clarify_expected']}"
+                if s["e2e_answers"].get("clarify_expected") else "—")),
     ("Классификатор запроса: точное совпадение", lambda s: s["queries"]["llm"]["types_exact_match"]),
     ("  правила (baseline)", lambda s: s["queries"]["rules"]["types_exact_match"]),
     ("Вызовов LLM на сессию", lambda s: s["performance"]["calls_per_session"]),

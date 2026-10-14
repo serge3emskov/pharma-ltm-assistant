@@ -535,3 +535,40 @@ def test_analog_question_gets_profile_restrictions(checker):
     assert [r.rule_id for r in rep.restrictions] == ["allergy_cross", "penicillin_allergy+cephalosporin"]
     assert checker.report(p, "Можно Флемоксин?").restrictions == []
     assert checker.report(p, "Флемоксин дорогой", choosing=True).restrictions  # классификатор: ANALOG
+
+
+# ---------------------------------------------------------------- прогон 3: уточняющие вопросы
+
+
+from pharmaltm.followup import clarify_check  # noqa: E402
+from pharmaltm.retrieval import ClarifyItem  # noqa: E402
+from pharmaltm.sections import Section  # noqa: E402
+
+MEDS_CHRONIC = [ClarifyItem(Section.MEDICATIONS, "unknown"), ClarifyItem(Section.CHRONIC_CONDITIONS, "unknown")]
+
+
+def test_clarify_questions_appended_when_model_recommends_without_asking():
+    answer = ("Предлагаю ибупрофен или парацетамол. Учтите, что у сына нет данных о других лекарствах "
+              "или хронических заболеваниях.")
+    c = clarify_check(answer, MEDS_CHRONIC, "сын")
+    assert c.asked == [] and c.questions == ["Принимает ли сын сейчас другие лекарства?",
+                                             "Есть ли хронические заболевания?"]
+    assert c.text.startswith(answer) and "уточните (для: сын)" in c.text
+
+
+def test_clarify_question_already_asked():
+    c = clarify_check("Подойдёт парацетамол. Уточните, есть ли хронические заболевания? А лекарства принимаете?",
+                      MEDS_CHRONIC)
+    assert len(c.asked) == 2 and c.appended == [] and c.text.endswith("принимаете?")
+
+
+def test_no_clarify_without_recommendation():
+    c = clarify_check("Спасибо, запомнил. Чем помочь?", MEDS_CHRONIC, recommended=False)
+    assert c.appended == [] and c.text == "Спасибо, запомнил. Чем помочь?"
+
+
+def test_assistant_appends_clarify_questions():
+    bot, _ = _bot("Возьмите Парацетамол.")
+    reply = bot.reply(USER, "Что-нибудь от головной боли?")
+    assert reply.raw_text == "Возьмите Парацетамол." and reply.clarify is not None
+    assert reply.clarify.appended and "❓" in reply.text
