@@ -1,6 +1,6 @@
 """Пересчёт E2E этапа 4 по сохранённым ответам: текущая проверка после ответа, без новой генерации.
 
-Запуск: python scripts/recheck_stage4.py reports/stage4_run3.json
+Запуск: python scripts/recheck_stage4.py reports/stage4_run4.json
 Справочник — стартовый набор, поэтому проверка «только по рецепту» не участвует (она требует ГРЛС).
 """
 from __future__ import annotations
@@ -61,4 +61,4 @@ def main(path: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "reports" / "stage4_run3.json"))
+    main(sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "reports" / "stage4_run4.json"))
